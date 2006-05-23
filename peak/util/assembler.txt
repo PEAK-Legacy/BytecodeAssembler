@@ -1,0 +1,282 @@
+=======================================================
+Generating Python Bytecode with ``peak.util.assembler``
+=======================================================
+
+Simple usage::
+
+    >>> from peak.util.assembler import Code
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.RETURN_VALUE()
+
+    >>> eval(c.code())
+    42
+
+    >>> from dis import dis
+    >>> dis(c.code())
+      0           0 LOAD_CONST               0 (42)
+                  3 RETURN_VALUE
+
+Line number tracking::
+
+    >>> def simple_code(flno, slno, consts=1, ):
+    ...     c = Code()
+    ...     c.set_lineno(flno)
+    ...     for i in range(consts): c.LOAD_CONST(None)
+    ...     c.set_lineno(slno)
+    ...     c.RETURN_VALUE()
+    ...     return c.code()
+
+    >>> dis(simple_code(1,1))
+      1           0 LOAD_CONST               0 (None)
+                  3 RETURN_VALUE
+
+    >>> simple_code(1,1).co_stacksize
+    1
+
+    >>> dis(simple_code(13,414))
+     13           0 LOAD_CONST               0 (None)
+    414           3 RETURN_VALUE
+
+    >>> dis(simple_code(13,14,100))
+     13           0 LOAD_CONST               0 (None)
+                  3 LOAD_CONST               0 (None)
+    ...
+     14         300 RETURN_VALUE
+
+    >>> simple_code(13,14,100).co_stacksize
+    100
+
+    >>> dis(simple_code(13,572,120))
+     13           0 LOAD_CONST               0 (None)
+                  3 LOAD_CONST               0 (None)
+    ...
+    572         360 RETURN_VALUE
+
+
+Stack size tracking::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(1)
+    >>> c.POP_TOP()
+    >>> c.LOAD_CONST(2)
+    >>> c.LOAD_CONST(3)
+    >>> c.co_stacksize
+    2
+    >>> c.BINARY_ADD()
+    >>> c.LOAD_CONST(4)
+    >>> c.co_stacksize
+    2
+    >>> c.LOAD_CONST(5)
+    >>> c.LOAD_CONST(6)
+    >>> c.co_stacksize
+    4
+    >>> c.POP_TOP()
+    >>> c.stack_size
+    3
+
+Stack underflow detection/recovery, and global/local variable names::
+
+    >>> c = Code()
+    >>> c.LOAD_GLOBAL('foo')
+    >>> c.stack_size
+    1
+    >>> c.STORE_ATTR('bar')     # drops stack by 2
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.co_names  # 'bar' isn't added unless success
+    ['foo']
+
+    >>> c.LOAD_ATTR('bar')
+    >>> c.co_names
+    ['foo', 'bar']
+
+    >>> c.DELETE_FAST('baz')
+    >>> c.co_varnames
+    ['baz']
+
+    >>> dis(c.code())
+      0           0 LOAD_GLOBAL              0 (foo)
+                  3 LOAD_ATTR                1 (bar)
+                  6 DELETE_FAST              0 (baz)
+
+Sequence operators and stack tracking:
+
+
+
+Function calls and raise::
+
+    >>> c = Code()
+    >>> c.LOAD_GLOBAL('locals')
+    >>> c.CALL_FUNCTION()   # argc/kwargc default to 0
+    >>> c.POP_TOP()
+    >>> c.LOAD_GLOBAL('foo')
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST('x')
+    >>> c.LOAD_CONST(2)
+    >>> c.CALL_FUNCTION(1,1)    # argc, kwargc
+    >>> c.POP_TOP()
+
+    >>> dis(c.code())
+      0           0 LOAD_GLOBAL              0 (locals)
+                  3 CALL_FUNCTION            0
+                  6 POP_TOP
+                  7 LOAD_GLOBAL              1 (foo)
+                 10 LOAD_CONST               0 (1)
+                 13 LOAD_CONST               1 ('x')
+                 16 LOAD_CONST               2 (2)
+                 19 CALL_FUNCTION          257
+                 22 POP_TOP
+
+    >>> c = Code()
+    >>> c.LOAD_GLOBAL('foo')
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST('x')
+    >>> c.LOAD_CONST(2)
+    >>> c.BUILD_MAP(0)
+    >>> c.stack_size
+    5
+    >>> c.CALL_FUNCTION_KW(1,1)
+    >>> c.POP_TOP()
+    >>> c.stack_size
+    0
+
+    >>> c = Code()
+    >>> c.LOAD_GLOBAL('foo')
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST('x')
+    >>> c.LOAD_CONST(1)
+    >>> c.BUILD_TUPLE(1)
+    >>> c.CALL_FUNCTION_VAR(0,1)
+    >>> c.POP_TOP()
+    >>> c.stack_size
+    0
+
+    >>> c = Code()
+    >>> c.LOAD_GLOBAL('foo')
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST('x')
+    >>> c.LOAD_CONST(1)
+    >>> c.BUILD_TUPLE(1)
+    >>> c.BUILD_MAP(0)
+    >>> c.CALL_FUNCTION_VAR_KW(0,1)
+    >>> c.POP_TOP()
+    >>> c.stack_size
+    0
+
+    >>> c = Code()
+    >>> c.RAISE_VARARGS(0)
+    >>> c.RAISE_VARARGS(1)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+    >>> c.LOAD_CONST(1)
+    >>> c.RAISE_VARARGS(1)
+
+    >>> dis(c.code())
+      0           0 RAISE_VARARGS            0
+                  3 LOAD_CONST               0 (1)
+                  6 RAISE_VARARGS            1
+
+Sequence building, unpacking, dup'ing::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST(2)
+    >>> c.BUILD_TUPLE(3)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.BUILD_LIST(3)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.BUILD_TUPLE(2)
+    >>> c.stack_size
+    1
+
+    >>> c.UNPACK_SEQUENCE(2)
+    >>> c.stack_size
+    2
+    >>> c.DUP_TOPX(3)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.DUP_TOPX(2)
+    >>> c.stack_size
+    4
+    >>> c.LOAD_CONST(3)
+    >>> c.BUILD_LIST(5)
+    >>> c.stack_size
+    1
+    >>> c.UNPACK_SEQUENCE(5)
+    >>> c.BUILD_SLICE(3)
+    >>> c.stack_size
+    3
+    >>> c.BUILD_SLICE(3)
+    >>> c.stack_size
+    1
+    >>> c.BUILD_SLICE(2)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> dis(c.code())
+      0           0 LOAD_CONST               0 (1)
+                  3 LOAD_CONST               1 (2)
+                  6 BUILD_TUPLE              2
+                  9 UNPACK_SEQUENCE          2
+                 12 DUP_TOPX                 2
+                 15 LOAD_CONST               2 (3)
+                 18 BUILD_LIST               5
+                 21 UNPACK_SEQUENCE          5
+                 24 BUILD_SLICE              3
+                 27 BUILD_SLICE              3
+
+    XXX Need tests for MAKE_CLOSURE/MAKE_FUNCTION
+
+
+Labels and backpatching forward references::
+
+    >>> c = Code()
+    >>> ref = c.JUMP_ABSOLUTE()
+    >>> c.LOAD_CONST(1)
+    >>> ref()
+    >>> c.RETURN_VALUE()
+    >>> dis(c.code())
+      0           0 JUMP_ABSOLUTE            6
+                  3 LOAD_CONST               0 (1)
+            >>    6 RETURN_VALUE
+
+    >>> c = Code()
+    >>> ref = c.JUMP_FORWARD()
+    >>> c.LOAD_CONST(1)
+    >>> ref()
+    >>> c.RETURN_VALUE()
+    >>> dis(c.code())
+      0           0 JUMP_FORWARD             3 (to 6)
+                  3 LOAD_CONST               0 (1)
+            >>    6 RETURN_VALUE
+
+    >>> c = Code()
+    >>> lbl = c.label()
+    >>> c.LOAD_CONST(1)
+    >>> c.JUMP_IF_TRUE(lbl)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Relative jumps can't go backwards
+
+    >>> c = Code()
+    >>> lbl = c.label()
+    >>> c.LOAD_CONST(1)
+    >>> ref = c.JUMP_ABSOLUTE(lbl)
+    >>> dis(c.code())
+      0     >>    0 LOAD_CONST               0 (1)
+                  3 JUMP_ABSOLUTE            0
+
+
