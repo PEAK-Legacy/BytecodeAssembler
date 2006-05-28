@@ -9,7 +9,7 @@ from setuptools import setup
 
 # Metadata
 PACKAGE_NAME = "BytecodeAssembler"
-PACKAGE_VERSION = "0.0.1"
+PACKAGE_VERSION = "0.0.2"
 PACKAGES = ['peak', 'peak.util']
 
 def get_description():

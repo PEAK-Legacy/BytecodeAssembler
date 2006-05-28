@@ -2,7 +2,7 @@ from array import array
 from dis import *
 from new import code
 
-__all__ = ['Code']
+__all__ = ['Code', 'Const', 'Call', 'Global']
 
 opcode = {}
 
@@ -15,9 +15,23 @@ for op in range(256):
 globals().update(opcode) # opcodes are now importable at will
 __all__.extend(opcode.keys())
 
+# Flags from code.h
+CO_OPTIMIZED              = 0x0001      # use LOAD/STORE_FAST instead of _NAME
+CO_NEWLOCALS              = 0x0002      # only cleared for module/exec code
+CO_VARARGS                = 0x0004
+CO_VARKEYWORDS            = 0x0008
+CO_NESTED                 = 0x0010      # ???
+CO_GENERATOR              = 0x0020
+CO_NOFREE                 = 0x0040      # set if no free or cell vars
+CO_GENERATOR_ALLOWED      = 0x1000      # unused
+CO_FUTURE_DIVISION        = 0x2000
+CO_FUTURE_ABSOLUTE_IMPORT = 0x4000      # Python 2.5+ only
+CO_FUTURE_WITH_STATEMENT  = 0x8000      # Python 2.5+ only
+
+__all__.extend([k for k in globals().keys() if k.startswith('CO_')])
 
 def additional_tests():
-    from protocols.tests import doctest
+    import doctest
     return doctest.DocFileSuite(
         'assembler.txt', package='peak.util.assembler',
         optionflags=doctest.ELLIPSIS|doctest.NORMALIZE_WHITESPACE,
@@ -25,12 +39,39 @@ def additional_tests():
 
 
 
+def Const(value):
+    def generate(code): code.LOAD_CONST(value)
+    return generate
 
+def Global(name):
+    def generate(code): code.LOAD_GLOBAL(name)
+    return generate
 
+def Call(func, args=(), kwargs=(), star=None, dstar=None):
+    def generate(code):
+        code(func)
+        map(code, args)
+        for k,v in kwargs:
+            assert isinstance(k, basestring)
+            code.LOAD_CONST(k)
+            code(v)
+        if star: code(star)
+        if dstar: code(dstar)
+        argc = len(args)
+        kwargc = len(kwargs)
 
+        if star:
+            if dstar:
+                code.CALL_FUNCTION_VAR_KW(argc, kwargc)
+            else:
+                code.CALL_FUNCTION_VAR(argc, kwargc)
+        else:
+            if dstar:
+                code.CALL_FUNCTION_KW(argc, kwargc)
+            else:
+                code.CALL_FUNCTION(argc, kwargc)
 
-
-
+    return generate
 
 
 
@@ -42,7 +83,7 @@ def additional_tests():
 class Code:
     co_argcount = 0
     co_stacksize = 0
-    co_flags = 0
+    co_flags = CO_OPTIMIZED | CO_NEWLOCALS      # typical usage
     co_filename = '<generated code>'
     co_name = '<lambda>'
     co_firstlineno = 0
@@ -53,22 +94,11 @@ class Code:
 
     def __init__(self):
         self.co_code = array('B')
-        self.co_consts = []
+        self.co_consts = [None]
         self.co_names = []
         self.co_varnames = []
         self.co_lnotab = array('B')
         self.emit = self.co_code.append
-
-    def code(self):
-        return code(
-            self.co_argcount, len(self.co_varnames),
-            self.co_stacksize, self.co_flags, self.co_code.tostring(),
-            tuple(self.co_consts), tuple(self.co_names),
-            tuple(self.co_varnames),
-            self.co_filename, self.co_name, self.co_firstlineno,
-            self.co_lnotab.tostring(),
-            self.co_freevars, self.co_cellvars
-        )
 
     def emit_arg(self, op, arg):
         emit = self.emit
@@ -79,6 +109,17 @@ class Code:
         emit(op)
         emit(arg&255)
         emit((arg>>8)&255)
+
+
+
+
+
+
+
+
+
+
+
 
     def set_lineno(self, lno):
         if not self.co_firstlineno:
@@ -203,6 +244,129 @@ class Code:
         return lbl
 
 
+    def __call__(self, ob):
+        if isinstance(ob, str):
+            if self.co_flags & CO_OPTIMIZED:
+                self.LOAD_FAST(ob)
+            else:
+                self.LOAD_NAME(ob)
+        elif isinstance(ob, tuple):
+            map(self, ob)
+            self.BUILD_TUPLE(len(ob))
+
+        elif isinstance(ob, list):
+            map(self, ob)
+            self.BUILD_LIST(len(ob))
+        elif isinstance(ob, dict):
+            self.BUILD_MAP(0)
+            for k,v in ob.items():
+                self.DUP_TOP()
+                self(k), self(v)
+                self.ROT_THREE()
+                self.STORE_SUBSCR()
+        else:
+            ob(self)
+
+    def Return(self, ob=Const(None)):
+        self(ob)
+        self.RETURN_VALUE()
+
+    def from_function(cls, function, copy_lineno=False):
+        code = cls.from_code(function.func_code, copy_lineno)
+        return code
+
+    from_function = classmethod(from_function)
+
+
+
+
+
+
+
+
+
+    def from_code(cls, code, copy_lineno=False):
+        self = cls()
+        if copy_lineno:
+            self.set_lineno(code.co_firstlineno)
+
+        import inspect
+        args, var, kw = inspect.getargs(code)
+        self.co_varnames.extend(args)
+        if var:
+            self.co_varnames.append(var)
+            self.flags |= CO_VARARGS
+        if kw:
+            self.co_varnames.append(kw)
+            self.flags |= CO_VARKEYWORDS
+
+        def tuple_arg(args):
+            self.UNPACK_SEQUENCE(len(args))
+            for arg in args:
+                if isinstance(arg, list):
+                    tuple_arg(arg)
+                else:
+                    self.STORE_FAST(arg)
+
+        for narg, arg in enumerate(args):
+            if isinstance(arg,list):
+                dummy_name = '.'+str(narg)
+                self.co_varnames[narg] = dummy_name
+                self.LOAD_FAST(dummy_name)
+                tuple_arg(arg)
+
+        self.co_argcount = code.co_argcount
+        self.co_name     = code.co_name
+        self.co_freevars = code.co_freevars
+        return self
+
+    from_code = classmethod(from_code)
+
+
+
+
+
+    def code(self):
+        flags = self.co_flags & ~CO_NOFREE
+
+        if not self.co_freevars and not self.co_cellvars:
+            flags |= CO_NOFREE
+
+        return code(
+            self.co_argcount, len(self.co_varnames),
+            self.co_stacksize, flags, self.co_code.tostring(),
+            tuple(self.co_consts), tuple(self.co_names),
+            tuple(self.co_varnames),
+            self.co_filename, self.co_name, self.co_firstlineno,
+            self.co_lnotab.tostring(), self.co_freevars, self.co_cellvars
+        )
+
+
+for op in hasfree:
+    if not hasattr(Code, opname[op]):
+        def do_free(self, varname, op=op):
+            self.stackchange(stack_effects[op])
+            try:
+                arg = (self.co_cellvars+self.co_freevars).index(varname)
+            except ValueError:
+                raise NameError("Undefined free or cell var", varname)
+            self.emit_arg(op, arg)
+        setattr(Code, opname[op], do_free)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 for op in hasname:
     if not hasattr(Code, opname[op]):
         def do_name(self, name, op=op):
@@ -213,6 +377,9 @@ for op in hasname:
                 arg = len(self.co_names)
                 self.co_names.append(name)
             self.emit_arg(op, arg)
+            if op in (LOAD_NAME, STORE_NAME, DELETE_NAME):
+                # Can't use optimized local vars, so reset flags
+                self.flags &= ~CO_OPTIMIZED
         setattr(Code, opname[op], do_name)
 
 for op in haslocal:
@@ -233,9 +400,6 @@ for op in hasjrel+hasjabs:
             self.stackchange(stack_effects[op])
             return self.jump(op, address)
         setattr(Code, opname[op], do_jump)
-
-
-
 
 
 

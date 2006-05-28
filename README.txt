@@ -4,14 +4,15 @@ Python Bytecode Assembler
 This is a simple assembler that handles most low-level bytecode details like
 jump offsets, stack size tracking, line number table generation, constant and
 variable name index tracking, etc.  That way, you can focus your attention on
-on the desired semantics of your bytecode instead of on these mechanical
-issues.
+the desired semantics of your bytecode instead of on these mechanical issues.
 
 Simple usage::
 
     >>> from peak.util.assembler import Code
     >>> c = Code()
+    >>> c.set_lineno(15)   # set the current line number (optional)
     >>> c.LOAD_CONST(42)
+    >>> c.set_lineno(16)   # set it as many times as you like
     >>> c.RETURN_VALUE()
 
     >>> eval(c.code())
@@ -19,8 +20,8 @@ Simple usage::
 
     >>> from dis import dis
     >>> dis(c.code())
-      0           0 LOAD_CONST               0 (42)
-                  3 RETURN_VALUE
+      15          0 LOAD_CONST               0 (42)
+      16          3 RETURN_VALUE
 
 Labels and backpatching forward references::
 
@@ -43,10 +44,37 @@ Labels and backpatching forward references::
       0     >>    0 LOAD_CONST               0 (1)
                   3 JUMP_ABSOLUTE            0
 
+Code generation using tuples, lists, dicts, calls, constants, globals, etc.::
+
+    >>> c = Code()
+    >>> c( ['x', ('y','z')] )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 LOAD_FAST                2 (z)
+                  9 BUILD_TUPLE              2
+                 12 BUILD_LIST               2
+
+    >>> from peak.util.assembler import Call, Const, Global
+    >>> c = Code()
+    >>> c.set_lineno(1)
+    >>> c(Call(Global('foo'), ['q'], [('x',Const(1))], 'starargs', 'kwargs'))
+    >>> c.RETURN_VALUE()
+    >>> dis(c.code())
+      1           0 LOAD_GLOBAL              0 (foo)
+                  3 LOAD_FAST                0 (q)
+                  6 LOAD_CONST               1 ('x')
+                  9 LOAD_CONST               2 (1)
+                 12 LOAD_FAST                1 (starargs)
+                 15 LOAD_FAST                2 (kwargs)
+                 18 CALL_FUNCTION_VAR_KW   257
+                 21 RETURN_VALUE
+
+(Code generation is also extensible; any 1-argument callables passed in will
+be called on the code object during generation.)
 
 For more examples, see ``assembler.txt`` in the ``peak.util`` package
-directory.  You can also use ``codeobject.set_lineno(number)`` to set the
-current line number.
+directory.
 
 There are a few features that aren't tested yet, and not all opcodes may be
 fully supported.  Notably, the following features are NOT reliably supported
