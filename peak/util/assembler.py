@@ -1,8 +1,9 @@
 from array import array
 from dis import *
-from new import code
+from new import code, instancemethod
+from types import CodeType
 
-__all__ = ['Code', 'Const', 'Call', 'Global']
+__all__ = ['Code', 'Const', 'Call', 'Global', 'Local']
 
 opcode = {}
 
@@ -13,7 +14,7 @@ for op in range(256):
     opcode[name]=op
 
 globals().update(opcode) # opcodes are now importable at will
-__all__.extend(opcode.keys())
+
 
 # Flags from code.h
 CO_OPTIMIZED              = 0x0001      # use LOAD/STORE_FAST instead of _NAME
@@ -38,40 +39,80 @@ def additional_tests():
     )
 
 
+def curry(f,*args):
+    for arg in args:
+        f = instancemethod(f,arg,type(arg))
+    return f
 
-def Const(value):
-    def generate(code): code.LOAD_CONST(value)
-    return generate
+def Const(value, code=None):
+    if code is None:
+        return curry(Const, value)
+    code.LOAD_CONST(value)
 
-def Global(name):
-    def generate(code): code.LOAD_GLOBAL(name)
-    return generate
+def Global(name, code=None):
+    if code is None:
+        return curry(Global, name)
+    code.LOAD_GLOBAL(name)
 
-def Call(func, args=(), kwargs=(), star=None, dstar=None):
-    def generate(code):
-        code(func)
-        map(code, args)
-        for k,v in kwargs:
-            assert isinstance(k, basestring)
-            code.LOAD_CONST(k)
-            code(v)
-        if star: code(star)
-        if dstar: code(dstar)
-        argc = len(args)
-        kwargc = len(kwargs)
+def Local(name, code=None):
+    if code is None:
+        return curry(Local, name)
+    if code.co_flags & CO_OPTIMIZED:
+        return code.LOAD_FAST(name)
+    else:
+        return code.LOAD_NAME(name)
 
-        if star:
-            if dstar:
-                code.CALL_FUNCTION_VAR_KW(argc, kwargc)
-            else:
-                code.CALL_FUNCTION_VAR(argc, kwargc)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def Call(func, args=(), kwargs=(), star=None, dstar=None, code=None):
+    if code is None:
+        return curry(Call, func, args, kwargs, star or (), dstar or ())
+
+    code(func)
+    map(code, args)
+    for k,v in kwargs:
+        assert isinstance(k, basestring)
+        code.LOAD_CONST(k)
+        code(v)
+    if star: code(star)
+    if dstar: code(dstar)
+    argc = len(args)
+    kwargc = len(kwargs)
+
+    if star:
+        if dstar:
+            code.CALL_FUNCTION_VAR_KW(argc, kwargc)
         else:
-            if dstar:
-                code.CALL_FUNCTION_KW(argc, kwargc)
-            else:
-                code.CALL_FUNCTION(argc, kwargc)
+            code.CALL_FUNCTION_VAR(argc, kwargc)
+    else:
+        if dstar:
+            code.CALL_FUNCTION_KW(argc, kwargc)
+        else:
+            code.CALL_FUNCTION(argc, kwargc)
 
-    return generate
+
+
+
+
+
+
+
 
 
 
@@ -245,29 +286,16 @@ class Code:
 
 
     def __call__(self, ob):
-        if isinstance(ob, str):
-            if self.co_flags & CO_OPTIMIZED:
-                self.LOAD_FAST(ob)
-            else:
-                self.LOAD_NAME(ob)
-        elif isinstance(ob, tuple):
-            map(self, ob)
-            self.BUILD_TUPLE(len(ob))
-
-        elif isinstance(ob, list):
-            map(self, ob)
-            self.BUILD_LIST(len(ob))
-        elif isinstance(ob, dict):
-            self.BUILD_MAP(0)
-            for k,v in ob.items():
-                self.DUP_TOP()
-                self(k), self(v)
-                self.ROT_THREE()
-                self.STORE_SUBSCR()
+        if callable(ob):
+            return ob(self)
+        try:
+            f = generate_types[type(ob)]
+        except KeyError:
+            raise TypeError("Can't generate", ob)
         else:
-            ob(self)
+            return f(self, ob)
 
-    def Return(self, ob=Const(None)):
+    def return_(self, ob=None):
         self(ob)
         self.RETURN_VALUE()
 
@@ -276,6 +304,19 @@ class Code:
         return code
 
     from_function = classmethod(from_function)
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -295,10 +336,10 @@ class Code:
         self.co_varnames.extend(args)
         if var:
             self.co_varnames.append(var)
-            self.flags |= CO_VARARGS
+            self.co_flags |= CO_VARARGS
         if kw:
             self.co_varnames.append(kw)
-            self.flags |= CO_VARKEYWORDS
+            self.co_flags |= CO_VARKEYWORDS
 
         def tuple_arg(args):
             self.UNPACK_SEQUENCE(len(args))
@@ -379,12 +420,16 @@ for op in hasname:
             self.emit_arg(op, arg)
             if op in (LOAD_NAME, STORE_NAME, DELETE_NAME):
                 # Can't use optimized local vars, so reset flags
-                self.flags &= ~CO_OPTIMIZED
+                self.co_flags &= ~CO_OPTIMIZED
         setattr(Code, opname[op], do_name)
 
 for op in haslocal:
     if not hasattr(Code, opname[op]):
         def do_local(self, varname, op=op):
+            if not self.co_flags & CO_OPTIMIZED:
+                raise AssertionError(
+                    "co_flags must include CO_OPTIMIZED to use fast locals"
+                )
             self.stackchange(stack_effects[op])
             try:
                 arg = self.co_varnames.index(varname)
@@ -400,6 +445,46 @@ for op in hasjrel+hasjabs:
             self.stackchange(stack_effects[op])
             return self.jump(op, address)
         setattr(Code, opname[op], do_jump)
+
+
+
+
+def gen_map(code, ob):
+    code.BUILD_MAP(0)
+    for k,v in ob.items():
+        code.DUP_TOP()
+        code(k), code(v)
+        code.ROT_THREE()
+        code.STORE_SUBSCR()
+
+def gen_tuple(code, ob):
+    map(code, ob)
+    return code.BUILD_TUPLE(len(ob))
+
+def gen_list(code, ob):
+    map(code, ob)
+    return code.BUILD_LIST(len(ob))
+
+generate_types = {
+    int:        Code.LOAD_CONST,
+    long:       Code.LOAD_CONST,
+    CodeType:   Code.LOAD_CONST,
+    str:        Code.LOAD_CONST,
+    unicode:    Code.LOAD_CONST,
+    complex:    Code.LOAD_CONST,
+    float:      Code.LOAD_CONST,
+    type(None): Code.LOAD_CONST,
+    tuple:      gen_tuple,
+    list:       gen_list,
+    dict:       gen_map,
+}
+
+
+
+
+
+
+
 
 
 

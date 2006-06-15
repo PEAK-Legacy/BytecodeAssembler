@@ -2,30 +2,83 @@
 Generating Python Bytecode with ``peak.util.assembler``
 =======================================================
 
+``peak.util.assembler`` is a simple bytecode assembler module that handles most
+low-level bytecode generation details like jump offsets, stack size tracking,
+line number table generation, constant and variable name index tracking, etc.
+That way, you can focus your attention on the desired semantics of your
+bytecode instead of on these mechanical issues.
+
+In addition to a low-level opcode-oriented API for directly generating specific
+bytecodes, the module also offers an extensible mini-AST framework for
+generating code from high-level specifications.  This framework does most of
+the work needed to transform tree-like structures into linear bytecode
+instructions, and includes the ability to do compile-time constant folding.
+
+
+.. contents:: Table of Contents
+
+
 --------------
 Programmer API
 --------------
 
-Opcode API
-==========
 
+Code Objects
+============
 
-Simple usage::
+To generate bytecode, you create a ``Code`` instance and perform operations
+on it.  For example, here we create a ``Code`` object representing lines
+15 and 16 of some input source::
 
     >>> from peak.util.assembler import Code
     >>> c = Code()
     >>> c.set_lineno(15)   # set the current line number (optional)
     >>> c.LOAD_CONST(42)
+
     >>> c.set_lineno(16)   # set it as many times as you like
     >>> c.RETURN_VALUE()
 
-    >>> eval(c.code())
-    42
+You'll notice that most ``Code`` methods are named for a CPython bytecode
+operation, but there also some other methods like ``.set_lineno()`` to let you
+set the current line number.  There's also a ``.code()`` method that returns
+a Python code object, representing the current state of the ``Code`` you've
+generated::
 
     >>> from dis import dis
     >>> dis(c.code())
       15          0 LOAD_CONST               1 (42)
       16          3 RETURN_VALUE
+
+As you can see, ``Code`` instances automatically generate a line number table
+that maps each ``set_lineno()`` to the corresponding position in the bytecode.
+
+And of course, the resulting code objects can be run with ``eval()`` or
+``exec``, or used with ``new.function`` to create a function::
+
+    >>> eval(c.code())
+    42
+
+    >>> exec c.code()   # exec discards the return value, so no output here
+
+    >>> import new
+    >>> f = new.function(c.code(), globals())
+    >>> f()
+    42
+
+
+Opcodes, Jumps, and Labels
+==========================
+
+``Code`` objects have methods for all of CPython's symbolic opcodes.  Generally
+speaking, each method accepts either zero or one argument, depending on whether
+the opcode accepts an argument.
+
+But while Python bytecode always encodes arguments as 16 or 32-bit integers,
+you will generally pass actual names or values to ``Code`` methods, and the
+``Code`` object will take care of maintaining the necessary lookup tables and
+translation to integer bytecode arguments.
+
+
 
 Labels and backpatching forward references::
 
@@ -54,8 +107,10 @@ Code Generation API
 
 Code generation from tuples, lists, dicts, and local variable names::
 
+    >>> from peak.util.assembler import Const, Call, Global, Local
+
     >>> c = Code()
-    >>> c( ['x', ('y','z')] )   # push a value on the stack
+    >>> c( [Local('x'), (Local('y'),Local('z'))] )  # push a value on the stack
     >>> dis(c.code())
       0           0 LOAD_FAST                0 (x)
                   3 LOAD_FAST                1 (y)
@@ -65,10 +120,9 @@ Code generation from tuples, lists, dicts, and local variable names::
 
 And with constants, dictionaries, globals, and calls::
 
-    >>> from peak.util.assembler import Const, Call, Global
 
     >>> c = Code()
-    >>> c.Return( [Global('type'), Const(27)] )     # push and RETURN_VALUE
+    >>> c.return_( [Global('type'), Const(27)] )     # push and RETURN_VALUE
     >>> dis(c.code())
       0           0 LOAD_GLOBAL              0 (type)
                   3 LOAD_CONST               1 (27)
@@ -106,8 +160,9 @@ arguments, an "*" argument, and a "**" argument.  To omit any of the optional
 arguments, just pass in an empty sequence in its place::
 
     >>> c = Code()
-    >>> c.Return(
-    ...     Call(Global('foo'), ['q'], [('x',Const(1))], 'starargs', 'kwargs')
+    >>> c.return_(
+    ...     Call(Global('foo'), [Local('q')], [('x',Const(1))],
+    ...          Local('starargs'), Local('kwargs'))
     ... )
     >>> dis(c.code())
       0           0 LOAD_GLOBAL              0 (foo)
@@ -132,13 +187,204 @@ arguments::
                   3 DUP_TOP
                   4 CALL_FUNCTION            0
 
-This basically means you can create an AST of callable objects to drive code
-generation, with a lot of the grunt work automatically handled for you.
+This basically means you can create a simple AST of callable objects to drive
+code generation, with a lot of the grunt work automatically handled for you.
 
 
----------
-Internals
----------
+Setting the Code's Calling Signature
+====================================
+
+The simplest way to set up the calling signature for a ``Code`` instance is
+to clone an existing function or code object's signature, using the
+``Code.from_function()`` or ``Code.from_code()`` classmethods.  These methods
+create a new code object whose calling signature (number and names of
+arguments) matches that of the original function or code objects::
+
+    >>> def f1(a,b,*c,**d):
+    ...     pass
+
+    >>> c1 = Code.from_function(f1)
+    >>> c1.co_argcount
+    2
+    >>> c1.co_varnames
+    ['a', 'b', 'c', 'd']
+
+    >>> import inspect
+    >>> inspect.getargspec(f1)
+    (['a', 'b'], 'c', 'd', None)
+
+    >>> f2 = new.function(c1.code(), globals())
+    >>> inspect.getargspec(f2)
+    (['a', 'b'], 'c', 'd', None)
+
+Note that these constructors do not copy any actual *code* from the code
+or function objects.  They simply copy the signature, and, if you set the
+``copy_lineno`` keyword argument to a true value, they will also set the
+created code object's ``co_firstlineno`` to match that of the original code or
+function object::
+
+    >>> c1 = Code.from_function(f1, copy_lineno=True)
+    >>> c1.co_firstlineno
+    1
+
+If you create a ``Code`` instance from a function that has nested positional
+arguments, the returned code object will include a prologue to unpack the
+arguments properly::
+
+    >>> def f3(a, (b,c), (d,(e,f))):
+    ...     pass
+
+    >>> f4 = new.function(Code.from_function(f3).code(), globals())
+    >>> dis(f4)
+      0           0 LOAD_FAST                1 (.1)
+                  3 UNPACK_SEQUENCE          2
+                  6 STORE_FAST               3 (b)
+                  9 STORE_FAST               4 (c)
+                 12 LOAD_FAST                2 (.2)
+                 15 UNPACK_SEQUENCE          2
+                 18 STORE_FAST               5 (d)
+                 21 UNPACK_SEQUENCE          2
+                 24 STORE_FAST               6 (e)
+                 27 STORE_FAST               7 (f)
+
+This is roughly the same code that Python would generate to do the same
+unpacking process, and is designed so that the ``inspect`` module will
+recognize it as an argument unpacking prologue::
+
+    >>> inspect.getargspec(f3)
+    (['a', ['b', 'c'], ['d', ['e', 'f']]], None, None, None)
+
+    >>> inspect.getargspec(f4)
+    (['a', ['b', 'c'], ['d', ['e', 'f']]], None, None, None)
+
+
+Code Attributes
+===============
+
+``Code`` instances have a variety of attributes corresponding to either the
+attributes of the Python code objects they generate, or to the current state
+of code generation.
+
+For example, the ``co_argcount`` and ``co_varnames`` attributes
+correspond to those used in creating the code for a Python function.  If you
+want your code to be a function, you can set them as follows::
+
+    >>> c = Code()
+    >>> c.co_argcount = 3
+    >>> c.co_varnames = ['a','b','c']
+
+    >>> c.LOAD_CONST(42)
+    >>> c.RETURN_VALUE()
+
+    >>> f = new.function(c.code(), globals())
+    >>> f(1,2,3)
+    42
+
+    >>> import inspect
+    >>> inspect.getargspec(f)
+    (['a', 'b', 'c'], None, None, None)
+
+Although Python code objects want ``co_varnames`` to be a tuple, ``Code``
+instances use a list, so that names can be added during code generation.  The
+``.code()`` method automatically creates tuples where necessary.
+
+Here are all of the ``Code`` attributes you may want to read or write:
+
+co_filename
+    A string representing the source filename for this code.  If it's an actual
+    filename, then tracebacks that pass through the generated code will display
+    lines from the file.  The default value is ``'<generated code>'``.
+
+co_name
+    The name of the function, class, or other block that this code represents.
+    The default value is ``'<lambda>'``.
+
+co_argcount
+    Number of positional arguments a function accepts; defaults to 0
+
+co_varnames
+    A list of strings naming the code's local variables, beginning with its
+    positional argument names, followed by its ``*`` and ``**`` argument names,
+    if applicable, followed by any other local variable names.  These names
+    are used by the ``LOAD_FAST`` and ``STORE_FAST`` opcodes, and invoking
+    the ``.LOAD_FAST(name)`` and ``.STORE_FAST(name)`` methods of a code object
+    will automatically add the given name to this list, if it's not already
+    present.
+
+co_flags
+    The flags for the Python code object.  This defaults to
+    ``CO_OPTIMIZED | CO_NEWLOCALS``, which is the correct value for a function
+    using "fast" locals.  This value is automatically or-ed with ``CO_NOFREE``
+    when generating a code object, if the ``co_cellvars`` and ``co_freevars``
+    attributes are empty.  And if you use the ``LOAD_NAME()``,
+    ``STORE_NAME()``, or ``DELETE_NAME()`` methods, the ``CO_OPTIMIZED`` bit
+    is automatically reset, since these opcodes can only be used when the
+    code is running with a real (i.e. not virtualized) ``locals()`` dictionary.
+
+    If you need to change any other flag bits besides the above, you'll need to
+    set or clear them manually.  For your convenience, the
+    ``peak.util.assembler`` module exports all the ``CO_`` constants used by
+    Python.  For example, you can use ``CO_VARARGS`` and ``CO_VARKEYWORDS`` to
+    indicate whether a function accepts ``*`` or ``**`` arguments, as long as
+    you extend the ``co_varnames`` list accordingly.  (Assuming you don't have
+    an existing function or code object with the desired signature, in which
+    case you could just use the ``from_function()`` or ``from_code()``
+    classmethods instead of messing with these low-level attributes and flags.)
+
+stack_size
+    The predicted height of the runtime value stack, as of the current opcode.
+    Its value is automatically updated by most opcodes, but you may want to
+    save and restore it for things like try/finally blocks.
+
+co_freevars
+    A tuple of strings naming a function's "cell" variables.  Defaults to an
+    empty tuple.  A function's free variables are the variables it "inherits"
+    from its surrounding scope.  If you're going to use this, you should set
+    it only once, before generating any code that references any free *or* cell
+    variables.
+
+co_cellvars
+    A tuple of strings naming a function's "cell" variables.  Defaults to an
+    empty tuple.  A function's cell variables are the variables that are
+    "inherited" by one or more of its nested functions.  If you're going to use
+    this, you should set it only once, before generating any code that
+    references any free *or* cell variables.
+
+These other attributes are automatically generated and maintained, so you'll
+probably never have a reason to change them:
+
+co_consts
+    A list of constants used by the code; the first (zeroth?) constant is
+    always ``None``.  Normally, this is automatically maintained; the
+    ``.LOAD_CONST(value)`` method checks to see if the constant is already
+    present in this list, and adds it if it is not there.
+
+co_names
+    A list of non-optimized or global variable names.  It's automatically
+    updated whenever you invoke a method to generate an opcode that uses
+    such names.
+
+co_code
+    A byte array containing the generated code.  Don't mess with this.
+
+co_firstlineno
+    The first line number of the generated code.  It automatically gets set
+    if you call ``.set_lineno()`` before generating any code; otherwise it
+    defaults to zero.
+
+co_lnotab
+    A byte array containing a generated line number table.  It's automatically
+    generated, so don't mess with it.
+
+co_stacksize
+    The maximum amount of stack space the code will require to run.  This
+    value is usually updated automatically as you generate code.
+
+
+
+----------------------
+Internals and Doctests
+----------------------
 
 Line number tracking::
 
@@ -408,7 +654,9 @@ Labels and backpatching forward references::
 
     >>> c = Code()
     >>> c.set_lineno(1)
-    >>> c(Call(Global('foo'), ['q'], [('x',Const(1))], 'starargs'))
+    >>> c(Call(Global('foo'), [Local('q')],
+    ...        [('x',Const(1))], Local('starargs'))
+    ... )
     >>> c.RETURN_VALUE()
     >>> dis(c.code())
       1           0 LOAD_GLOBAL              0 (foo)
@@ -422,7 +670,9 @@ Labels and backpatching forward references::
 
     >>> c = Code()
     >>> c.set_lineno(1)
-    >>> c(Call(Global('foo'), ['q'], [('x',Const(1))], None, 'kwargs'))
+    >>> c(Call(Global('foo'), [Local('q')], [('x',Const(1))],
+    ...        None, Local('kwargs'))
+    ... )
     >>> c.RETURN_VALUE()
     >>> dis(c.code())
       1           0 LOAD_GLOBAL              0 (foo)
