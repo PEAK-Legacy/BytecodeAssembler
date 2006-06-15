@@ -403,7 +403,7 @@ Line number tracking::
     >>> simple_code(1,1).co_stacksize
     1
 
-    >>> dis(simple_code(13,414))
+    >>> dis(simple_code(13,414))    # FAILURE EXPECTED IN PYTHON 2.3
      13           0 LOAD_CONST               0 (None)
     414           3 RETURN_VALUE
 
@@ -416,7 +416,7 @@ Line number tracking::
     >>> simple_code(13,14,100).co_stacksize
     100
 
-    >>> dis(simple_code(13,572,120))
+    >>> dis(simple_code(13,572,120))    # FAILURE EXPECTED IN Python 2.3
      13           0 LOAD_CONST               0 (None)
                   3 LOAD_CONST               0 (None)
     ...
