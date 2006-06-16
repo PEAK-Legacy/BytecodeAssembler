@@ -3,7 +3,9 @@ from dis import *
 from new import code, instancemethod
 from types import CodeType
 
-__all__ = ['Code', 'Const', 'Call', 'Global', 'Local']
+__all__ = [
+    'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'nil', 'ast_curry'
+]
 
 opcode = {}
 
@@ -14,7 +16,6 @@ for op in range(256):
     opcode[name]=op
 
 globals().update(opcode) # opcodes are now importable at will
-
 
 # Flags from code.h
 CO_OPTIMIZED              = 0x0001      # use LOAD/STORE_FAST instead of _NAME
@@ -38,51 +39,50 @@ def additional_tests():
         optionflags=doctest.ELLIPSIS|doctest.NORMALIZE_WHITESPACE,
     )
 
+class _nil(object):
+    """Pseudo-None object used to work around ast_currying limitations"""
+    __slots__ = ()
+    def __nonzero__(self): return False
+    def __call__(self,code): code.LOAD_CONST(None)
 
-def curry(f,*args):
+nil = _nil()
+
+def ast_curry(f,*args):
     for arg in args:
+        if arg is None:
+            arg = nil
         f = instancemethod(f,arg,type(arg))
     return f
 
 def Const(value, code=None):
     if code is None:
-        return curry(Const, value)
+        return ast_curry(Const, value)
     code.LOAD_CONST(value)
 
 def Global(name, code=None):
     if code is None:
-        return curry(Global, name)
+        return ast_curry(Global, name)
     code.LOAD_GLOBAL(name)
 
 def Local(name, code=None):
     if code is None:
-        return curry(Local, name)
-    if code.co_flags & CO_OPTIMIZED:
+        return ast_curry(Local, name)
+    if name in code.co_cellvars or name in code.co_freevars:
+        return code.LOAD_DEREF(name)
+    elif code.co_flags & CO_OPTIMIZED:
         return code.LOAD_FAST(name)
     else:
         return code.LOAD_NAME(name)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+def Return(value=None, code=None):
+    if code is None:
+        return ast_curry(Return, value)
+    code(value)
+    return code.RETURN_VALUE()
 
 def Call(func, args=(), kwargs=(), star=None, dstar=None, code=None):
     if code is None:
-        return curry(Call, func, args, kwargs, star or (), dstar or ())
+        return ast_curry(Call, func, args, kwargs, star, dstar)
 
     code(func)
     map(code, args)
@@ -249,7 +249,7 @@ class Code:
         self.stackchange((count,1))
         self.emit_arg(BUILD_SLICE,count)
 
-    def DUP_TOPX(self,count):
+    def DUP_TOPX(self, count):
         self.stackchange((count,count*2))
         self.emit_arg(DUP_TOPX,count)
 
@@ -276,7 +276,7 @@ class Code:
                 assert target>=0, "Relative jumps can't go backwards"
             self.co_code[posn-2] = target & 255
             self.co_code[posn-1] = (target>>8) & 255
-        def lbl():
+        def lbl(code=None):
             backpatch(self.label())
         self.emit_arg(op,0)
         posn = self.label()
@@ -285,29 +285,29 @@ class Code:
         return lbl
 
 
-    def __call__(self, ob):
-        if callable(ob):
-            return ob(self)
-        try:
-            f = generate_types[type(ob)]
-        except KeyError:
-            raise TypeError("Can't generate", ob)
-        else:
-            return f(self, ob)
+    def __call__(self, *args):
+        last = None
+        for ob in args:
+            if callable(ob):
+                last = ob(self)
+            else:
+                try:
+                    f = generate_types[type(ob)]
+                except KeyError:
+                    raise TypeError("Can't generate", ob)
+                else:
+                    last = f(self, ob)
+        return last
 
     def return_(self, ob=None):
         self(ob)
-        self.RETURN_VALUE()
+        return self.RETURN_VALUE()
 
     def from_function(cls, function, copy_lineno=False):
         code = cls.from_code(function.func_code, copy_lineno)
         return code
 
     from_function = classmethod(from_function)
-
-
-
-
 
 
 
@@ -388,7 +388,7 @@ for op in hasfree:
         def do_free(self, varname, op=op):
             self.stackchange(stack_effects[op])
             try:
-                arg = (self.co_cellvars+self.co_freevars).index(varname)
+                arg = list(self.co_cellvars+self.co_freevars).index(varname)
             except ValueError:
                 raise NameError("Undefined free or cell var", varname)
             self.emit_arg(op, arg)
@@ -453,21 +453,22 @@ def gen_map(code, ob):
     code.BUILD_MAP(0)
     for k,v in ob.items():
         code.DUP_TOP()
-        code(k), code(v)
+        code(k, v)
         code.ROT_THREE()
         code.STORE_SUBSCR()
 
 def gen_tuple(code, ob):
-    map(code, ob)
+    code(*ob)
     return code.BUILD_TUPLE(len(ob))
 
 def gen_list(code, ob):
-    map(code, ob)
+    code(*ob)
     return code.BUILD_LIST(len(ob))
 
 generate_types = {
     int:        Code.LOAD_CONST,
     long:       Code.LOAD_CONST,
+    bool:       Code.LOAD_CONST,
     CodeType:   Code.LOAD_CONST,
     str:        Code.LOAD_CONST,
     unicode:    Code.LOAD_CONST,
@@ -478,10 +479,6 @@ generate_types = {
     list:       gen_list,
     dict:       gen_map,
 }
-
-
-
-
 
 
 

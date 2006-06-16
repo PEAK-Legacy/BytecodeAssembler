@@ -66,118 +66,384 @@ And of course, the resulting code objects can be run with ``eval()`` or
     42
 
 
-Opcodes, Jumps, and Labels
-==========================
+Opcodes and Arguments
+=====================
 
 ``Code`` objects have methods for all of CPython's symbolic opcodes.  Generally
 speaking, each method accepts either zero or one argument, depending on whether
 the opcode accepts an argument.
 
-But while Python bytecode always encodes arguments as 16 or 32-bit integers,
-you will generally pass actual names or values to ``Code`` methods, and the
-``Code`` object will take care of maintaining the necessary lookup tables and
-translation to integer bytecode arguments.
+Python bytecode always encodes opcode arguments as 16 or 32-bit integers, but
+sometimes these numbers are actually offsets into a sequence of names or
+constants.  ``Code`` objects take care of maintaining these sequences for you,
+allowing you to just pass in a name or value directly, instead of needing to
+keep track of what numbers map to what names or values.
 
-
-
-Labels and backpatching forward references::
+The name or value you pass in to such methods will be looked up in the
+appropriate table (see `Code Attributes`_ below for a list), and if not found,
+it will be added::
 
     >>> c = Code()
-    >>> ref = c.JUMP_ABSOLUTE()     # jump w/unspecified target
-    >>> c.LOAD_CONST(1)
-    >>> ref()                       # resolve the forward reference
+    >>> c.co_consts, c.co_varnames, c.co_names
+    ([None], [], [])
+
+    >>> c.LOAD_CONST(42)
+    >>> c.LOAD_FAST('x')
+    >>> c.LOAD_GLOBAL('y')
+    >>> c.LOAD_NAME('z')
+
+    >>> c.co_consts, c.co_varnames, c.co_names
+    ([None, 42], ['x'], ['y', 'z'])
+
+The one exception to this automatic addition feature is that opcodes referring
+to "free" or "cell" variables will not automatically add new names, because the
+names need to be defined first::
+
+    >>> c.LOAD_DEREF('q')
+    Traceback (most recent call last):
+      ...
+    NameError: ('Undefined free or cell var', 'q')
+
+In general, opcode methods take the same arguments as their Python bytecode
+equivalent.  But there are a few special cases.
+
+
+Call Arguments
+--------------
+
+First, the ``CALL_FUNCTION()``, ``CALL_FUNCTION_VAR()``, ``CALL_FUNCTION_KW()``,
+and ``CALL_FUNCTION_VAR_KW()`` methods all take *two* arguments, both of which
+are optional.  (The ``_VAR`` and ``_KW`` suffixes in the method names indicate
+whether or not a ``*args`` or ``**kwargs`` or both are also present on the
+stack, in addition to the explicit positional and keyword arguments.)
+
+The first argument of each of these methods, is the number of positional
+arguments on the stack, and the second is the number of keyword/value pairs on
+the stack (to be used as keyword arguments).  Both default to zero if not
+supplied::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(type)
+    >>> c.LOAD_CONST(27)
+    >>> c.CALL_FUNCTION(1)      # 1 positional, no keywords
     >>> c.RETURN_VALUE()
-    >>> dis(c.code())
-      0           0 JUMP_ABSOLUTE            6
-                  3 LOAD_CONST               1 (1)
-            >>    6 RETURN_VALUE
 
+    >>> eval(c.code())          # computes type(27)
+    <type 'int'>
 
     >>> c = Code()
-    >>> lbl = c.label()     # create a label at this point in the code
-    >>> c.LOAD_CONST(1)
-    >>> ref = c.JUMP_ABSOLUTE(lbl)  # and jump to it
+    >>> c.LOAD_CONST(dict)
+    >>> c.LOAD_CONST('x')
+    >>> c.LOAD_CONST(42)
+    >>> c.CALL_FUNCTION(0,1)    # no positional, 1 keyword
+    >>> c.RETURN_VALUE()
+
+    >>> eval(c.code())          # computes dict(x=42)
+    {'x': 42}
+
+
+Jumps, Labels, and Blocks
+-------------------------
+
+Opcodes that perform jumps or refer to addresses (which includes block-setup
+opcodes like ``SETUP_LOOP`` and ``SETUP_FINALLY``) can be invoked in one of
+two ways.  First, if you are jumping backwards (with ``JUMP_ABSOLUTE`` or
+``CONTINUE_LOOP``), you can obtain the target bytecode offset using the
+``.label()`` method, and then later pass that label into the appropriate
+method::
+
+    >>> c = Code()
+    >>> my_label = c.label()        # create a label at the start of the code
+
+    >>> c.LOAD_CONST(42)
+    >>> c.JUMP_ABSOLUTE(my_label)   # now jump back to it
+    <...>
+
     >>> dis(c.code())
-      0     >>    0 LOAD_CONST               1 (1)
+      0     >>    0 LOAD_CONST               1 (42)
                   3 JUMP_ABSOLUTE            0
 
-
-Code Generation API
-===================
-
-Code generation from tuples, lists, dicts, and local variable names::
-
-    >>> from peak.util.assembler import Const, Call, Global, Local
+But if you are jumping *forward* (or setting up a loop or a try block), you
+will need to call the jump or setup method without any arguments, and save the
+return value.  The return value of all jump and block-setup methods is a
+"forward reference" object that can be called later to indicate that the
+desired jump target has been reached::
 
     >>> c = Code()
-    >>> c( [Local('x'), (Local('y'),Local('z'))] )  # push a value on the stack
+    >>> forward = c.JUMP_ABSOLUTE() # create a jump and a forward reference
+
+    >>> c.LOAD_CONST(42)            # this is what we want to skip over
+
+    >>> forward()   # calling the reference changes the jump to point here
+    >>> c.LOAD_CONST(23)
+    >>> c.RETURN_VALUE()
+
     >>> dis(c.code())
-      0           0 LOAD_FAST                0 (x)
-                  3 LOAD_FAST                1 (y)
-                  6 LOAD_FAST                2 (z)
-                  9 BUILD_TUPLE              2
-                 12 BUILD_LIST               2
-
-And with constants, dictionaries, globals, and calls::
-
-
-    >>> c = Code()
-    >>> c.return_( [Global('type'), Const(27)] )     # push and RETURN_VALUE
-    >>> dis(c.code())
-      0           0 LOAD_GLOBAL              0 (type)
-                  3 LOAD_CONST               1 (27)
-                  6 BUILD_LIST               2
+      0           0 JUMP_ABSOLUTE            6
+                  3 LOAD_CONST               1 (42)
+            >>    6 LOAD_CONST               2 (23)
                   9 RETURN_VALUE
 
+    >>> eval(c.code())
+    23
+
+Note that ``Code`` objects do not currently implement any special handling
+for "block" operations like ``SETUP_EXCEPT`` and ``END_FINALLY``.  You will
+probably need to manually adjust the predicted stack size when working with
+these opcodes.  See the section below on `Code Attributes`_ for information
+on the ``stack_size`` and ``co_stacksize`` attributes of ``Code`` objects.
+
+
+Other Special Opcodes
+---------------------
+
+The ``MAKE_CLOSURE`` method takes an argument for the number of default values
+on the stack, just like the "real" Python opcode.  However, it also has an
+an additional required argument: the number of closure cells on the stack.
+The Python interpreter normally gets this number from a code object that's on
+the stack, but ``Code`` objects need this value in order to update the
+current stack size, for purposes of computing the required total stack size::
+
+    >>> def x(a,b):     # a simple closure example
+    ...     def y():
+    ...         return a+b
+    ...     return y
+
     >>> c = Code()
-    >>> c( {Const('x'): Const(123)} )
+    >>> c.co_cellvars = ('a','b')
+
+    >>> c.LOAD_CLOSURE('a')
+    >>> c.LOAD_CLOSURE('b')
+    >>> c.LOAD_CONST(None)  # in real code, this'd be a Python code constant
+    >>> c.MAKE_CLOSURE(0,2) # no defaults, 2 free vars in the new function
+
+
+High-Level Code Generation
+==========================
+
+Typical real-life code generation use cases call for transforming tree-like
+data structures into bytecode, rather than linearly outputting instructions.
+``Code`` objects provide for this using a simple but high-level transformation
+API.
+
+``Code`` objects may be *called*, passing in one or more arguments.  Each
+argument will have bytecode generated for it, according to its type:
+
+
+Simple Constants
+----------------
+
+If an argument is an integer, long, float, complex, string, unicode, boolean,
+``None``, or Python code object, it is treated as though it was passed to
+the ``LOAD_CONST`` method directly::
+
+    >>> c = Code()
+    >>> c(1, 2L, 3.0, 4j+5, "6", u"7", False, None, c.code())
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (2L)
+                  6 LOAD_CONST               3 (3.0)
+                  9 LOAD_CONST               4 ((5+4j))
+                 12 LOAD_CONST               5 ('6')
+                 15 LOAD_CONST               6 (u'7')
+                 18 LOAD_CONST               7 (False)
+                 21 LOAD_CONST               0 (None)
+                 24 LOAD_CONST               8 (<code object <lambda> at ...>)
+
+
+Simple Containers
+-----------------
+
+If an argument is a tuple, list, or dictionary, code is generated to
+reconstruct the given data, recursively::
+
+    >>> c = Code()
+    >>> c({1:(2,"3"), 4:[5,6]})
     >>> dis(c.code())
       0           0 BUILD_MAP                0
                   3 DUP_TOP
-                  4 LOAD_CONST               1 ('x')
-                  7 LOAD_CONST               2 (123)
-                 10 ROT_THREE
-                 11 STORE_SUBSCR
+                  4 LOAD_CONST               1 (1)
+                  7 LOAD_CONST               2 (2)
+                 10 LOAD_CONST               3 ('3')
+                 13 BUILD_TUPLE              2
+                 16 ROT_THREE
+                 17 STORE_SUBSCR
+                 18 DUP_TOP
+                 19 LOAD_CONST               4 (4)
+                 22 LOAD_CONST               5 (5)
+                 25 LOAD_CONST               6 (6)
+                 28 BUILD_LIST               2
+                 31 ROT_THREE
+                 32 STORE_SUBSCR
+
+
+Arbitrary Constants
+-------------------
+
+The ``Const`` wrapper allows you to treat any object as a literal constant,
+regardless of its type::
+
+    >>> from peak.util.assembler import Const
 
     >>> c = Code()
-    >>> c(Call(Global('type'), (Const(1),)))
+    >>> c( Const( (1,2,3) ) )
     >>> dis(c.code())
+      0           0 LOAD_CONST               1 ((1, 2, 3))
+
+As you can see, the above creates code that references an actual tuple as
+a constant, rather than generating code to recreate the tuple using a series of
+``LOAD_CONST`` operations followed by a ``BUILD_TUPLE``.
+
+
+Local and Global Names
+----------------------
+
+The ``Local`` and ``Global`` wrappers take a name, and load either a local or
+global variable, respectively::
+
+    >>> from peak.util.assembler import Global, Local
+
+    >>> c( Local('x'), Global('y') )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ((1, 2, 3))
+                  3 LOAD_FAST                0 (x)
+                  6 LOAD_GLOBAL              0 (y)
+
+As with simple constants and ``Const`` wrappers, these objects can be used to
+construct more complex expressions, like ``{a:(b,c)}``::
+
+    >>> c = Code()
+    >>> c( {Local('a'): (Local('b'), Local('c'))} )
+    >>> dis(c.code())
+      0           0 BUILD_MAP                0
+                  3 DUP_TOP
+                  4 LOAD_FAST                0 (a)
+                  7 LOAD_FAST                1 (b)
+                 10 LOAD_FAST                2 (c)
+                 13 BUILD_TUPLE              2
+                 16 ROT_THREE
+                 17 STORE_SUBSCR
+
+If the code object is not using "fast locals" (i.e. ``CO_OPTIMIZED`` isn't
+set), local variables will be dereferenced using ``LOAD_NAME`` instead of
+``LOAD_FAST``, and if the referenced local name is a "cell" or "free"
+variable, ``LOAD_DEREF`` is used instead::
+
+    >>> from peak.util.assembler import CO_OPTIMIZED
+    >>> c = Code()
+    >>> c.co_flags &= ~CO_OPTIMIZED
+    >>> c.co_cellvars = ('y',)
+    >>> c.co_freevars = ('z',)
+    >>> c( Local('x'), Local('y'), Local('z') )
+    >>> dis(c.code())
+      0           0 LOAD_NAME                0 (x)
+                  3 LOAD_DEREF               0 (y)
+                  6 LOAD_DEREF               1 (z)
+
+
+Calling Functions and Methods
+-----------------------------
+
+    >>> from peak.util.assembler import Call
+
+The ``Call`` wrapper takes 1-4 arguments: the expression to be called, a
+sequence of positional arguments, a sequence of keyword/value pairs for
+explicit keyword arguments, an "*" argument, and a "**" argument.  To omit any
+of the optional arguments, just pass in an empty sequence in its place::
+
+    >>> c = Code()
+    >>> c( Call(Global('type'), [Const(27)]) )
+
+    >>> dis(c.code())   # type(27)
       0           0 LOAD_GLOBAL              0 (type)
-                  3 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               1 (27)
                   6 CALL_FUNCTION            1
 
     >>> c = Code()
-    >>> c(Call(Global('getattr'), (Const(1), Const('__class__'))))
-    >>> dis(c.code())
-      0           0 LOAD_GLOBAL              0 (getattr)
-                  3 LOAD_CONST               1 (1)
-                  6 LOAD_CONST               2 ('__class__')
-                  9 CALL_FUNCTION            2
+    >>> c(Call(Global('dict'), (), [('x', 42)]))
 
-``Call`` objects take 1-4 arguments: the expression to be called, a sequence
-of positional arguments, a sequence of keyword/value pairs for explicit keyword
-arguments, an "*" argument, and a "**" argument.  To omit any of the optional
-arguments, just pass in an empty sequence in its place::
+    >>> dis(c.code())   # dict(x=42)
+      0           0 LOAD_GLOBAL              0 (dict)
+                  3 LOAD_CONST               1 ('x')
+                  6 LOAD_CONST               2 (42)
+                  9 CALL_FUNCTION            256
 
     >>> c = Code()
-    >>> c.return_(
-    ...     Call(Global('foo'), [Local('q')], [('x',Const(1))],
-    ...          Local('starargs'), Local('kwargs'))
-    ... )
-    >>> dis(c.code())
-      0           0 LOAD_GLOBAL              0 (foo)
-                  3 LOAD_FAST                0 (q)
-                  6 LOAD_CONST               1 ('x')
-                  9 LOAD_CONST               2 (1)
-                 12 LOAD_FAST                1 (starargs)
-                 15 LOAD_FAST                2 (kwargs)
-                 18 CALL_FUNCTION_VAR_KW   257
-                 21 RETURN_VALUE
+    >>> c(Call(Global('foo'), (), (), Local('args'), Local('kw')))
 
-Code generation is extensible: any 1-argument callables passed in will
-be passed the code object during generation.  (The return value, if any, is
-ignored.)  You can even use ``Code`` methods, if they don't have any required
-arguments::
+    >>> dis(c.code())   # foo(*args, **kw)
+      0           0 LOAD_GLOBAL              0 (foo)
+                  3 LOAD_FAST                0 (args)
+                  6 LOAD_FAST                1 (kw)
+                  9 CALL_FUNCTION_VAR_KW     0
+
+
+Returning Values
+----------------
+
+The ``Return(target)`` wrapper generates code for its target, followed by
+a ``RETURN_VALUE`` opcode::
+
+    >>> from peak.util.assembler import Return
+
+    >>> c = Code()
+    >>> c( Return(1) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 RETURN_VALUE
+
+
+``Code`` objects also have a ``return_()`` method that provides a more compact
+spelling of the same thing::
+
+    >>> c = Code()
+    >>> c.return_((1,2))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (2)
+                  6 BUILD_TUPLE              2
+                  9 RETURN_VALUE
+
+Both ``Return`` and ``return_()`` can be used with no argument, in which case
+``None`` is returned::
+
+    >>> c = Code()
+    >>> c.return_()
+    >>> c( Return() )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               0 (None)
+                  3 RETURN_VALUE
+                  4 LOAD_CONST               0 (None)
+                  7 RETURN_VALUE
+
+
+Using Forward References As Targets
+-----------------------------------
+
+The forward reference callbacks returned by jump operations are also usable
+as code generation targets, indicating that the jump should go to the
+current location.  For example::
+
+    >>> c = Code()
+    >>> forward = c.JUMP_FORWARD()
+    >>> c( 1, 2, forward, Return(3) )
+    >>> dis(c.code())
+      0           0 JUMP_FORWARD             6 (to 9)
+                  3 LOAD_CONST               1 (1)
+                  6 LOAD_CONST               2 (2)
+             >>   9 LOAD_CONST               3 (3)
+                 12 RETURN_VALUE
+
+
+Custom Code Generation
+======================
+
+Code generation is extensible: you can use any callable as a code-generation
+target.  It will be called with exactly one argument: the code object.  It can
+then perform whatever operations are desired.
+
+In the most trivial case, you can use any unbound ``Code`` method as a code
+generation target, e.g.::
 
     >>> c = Code()
     >>> c.LOAD_GLOBAL('foo')
@@ -187,8 +453,60 @@ arguments::
                   3 DUP_TOP
                   4 CALL_FUNCTION            0
 
-This basically means you can create a simple AST of callable objects to drive
-code generation, with a lot of the grunt work automatically handled for you.
+As you can see, the ``Code.DUP_TOP()`` is called on the code instance, causing
+a ``DUP_TOP`` opcode to be output.  This is sometimes a handy trick for
+accessing values that are already on the stack.  More commonly, however, you'll
+want to implement more sophisticated callables, perhaps something like::
+
+    >>> from peak.util.assembler import ast_curry
+
+    >>> def TryFinally(block1, block2, code=None):
+    ...     if code is None:
+    ...         return ast_curry(TryFinally, block1, block2)
+    ...     fwd = code.SETUP_FINALLY()
+    ...     code(block1, Code.POP_BLOCK, None, fwd, block2, Code.END_FINALLY)
+
+    >>> def Stmt(value, code=None):
+    ...     if code is None:
+    ...         return ast_curry(Stmt, value)
+    ...     code( value, Code.POP_TOP )
+
+    >>> c = Code()
+    >>> c( TryFinally(Stmt(1), Stmt(2)) )
+    >>> dis(c.code())
+      0           0 SETUP_FINALLY            8 (to 11)
+                  3 LOAD_CONST               1 (1)
+                  6 POP_TOP
+                  7 POP_BLOCK
+                  8 LOAD_CONST               0 (None)
+            >>   11 LOAD_CONST               2 (2)
+                 14 POP_TOP
+                 15 END_FINALLY
+
+The ``ast_curry()`` utility function returns an ``instancemethod`` chain that
+binds the given arguments to the given function, creating a hashable and
+comparable data structure -- a trivial sort of "AST node".  Just follow the
+code pattern above, using a ``code=None`` final argument, and returning a
+curried version of the function if ``code is None``.  Otherwise, your function
+should simply do whatever is needed to "generate" the arguments.
+
+This is exactly the same way that ``Const``, ``Call``, ``Local``, etc. are
+implemented within ``peak.util.assembler``.
+
+The ``ast_curry()`` utility function isn't quite perfect; due to a quirk of the
+``instancemethod`` type, it can't save arguments whose value is ``None``: if
+you pass a ``None`` argument to ``ast_curry()``, it will be replaced with a
+special ``nil`` object that tests as false, and generates a ``None`` constant
+when code is generated for it.  If your function accepts any arguments that
+might have a value of ``None``, you must correctly handle the cases where you
+receive a value of ``nil`` (found in ``peak.util.assembler``) instead of
+``None``.
+
+However, if you can use ``ast_curry()`` to generate your AST nodes, you will
+have objects that are hashable and comparable by default, as long as none of
+your child nodes are unhashable or incomparable.  This can be useful for
+algorithms that require comparing AST subtrees, such as common subexpression
+elimination.
 
 
 Setting the Code's Calling Signature
@@ -197,23 +515,20 @@ Setting the Code's Calling Signature
 The simplest way to set up the calling signature for a ``Code`` instance is
 to clone an existing function or code object's signature, using the
 ``Code.from_function()`` or ``Code.from_code()`` classmethods.  These methods
-create a new code object whose calling signature (number and names of
+create a new ``Code`` instance whose calling signature (number and names of
 arguments) matches that of the original function or code objects::
 
     >>> def f1(a,b,*c,**d):
     ...     pass
 
-    >>> c1 = Code.from_function(f1)
-    >>> c1.co_argcount
-    2
-    >>> c1.co_varnames
-    ['a', 'b', 'c', 'd']
+    >>> c = Code.from_function(f1)
+    >>> f2 = new.function(c.code(), globals())
 
     >>> import inspect
+
     >>> inspect.getargspec(f1)
     (['a', 'b'], 'c', 'd', None)
 
-    >>> f2 = new.function(c1.code(), globals())
     >>> inspect.getargspec(f2)
     (['a', 'b'], 'c', 'd', None)
 
@@ -334,7 +649,9 @@ co_flags
 stack_size
     The predicted height of the runtime value stack, as of the current opcode.
     Its value is automatically updated by most opcodes, but you may want to
-    save and restore it for things like try/finally blocks.
+    save and restore it for things like try/finally blocks.  If you increase
+    the value of this attribute, you should also update the ``co_stacksize``
+    attribute if it is less than the new ``stack_size``.
 
 co_freevars
     A tuple of strings naming a function's "cell" variables.  Defaults to an
@@ -378,7 +695,11 @@ co_lnotab
 
 co_stacksize
     The maximum amount of stack space the code will require to run.  This
-    value is usually updated automatically as you generate code.
+    value is usually updated automatically as you generate code.  However, if
+    you manually set a new ``stack_size`` that is larger than the current
+    ``co_stacksize``, you should increase the ``co_stacksize`` to match, so
+    that ``co_stacksize`` is always the largest stack size the code will
+    generate at runtime.
 
 
 
@@ -607,30 +928,42 @@ Sequence building, unpacking, dup'ing::
                  24 BUILD_SLICE              3
                  27 BUILD_SLICE              3
 
-    XXX Need tests for MAKE_CLOSURE/MAKE_FUNCTION
+Stack levels for MAKE_FUNCTION/MAKE_CLOSURE::
+
+    >>> c = Code()
+    >>> c.MAKE_FUNCTION(0)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST(2) # simulate being a function
+    >>> c.MAKE_FUNCTION(1)
+    >>> c.stack_size
+    1
+
+    >>> c = Code()
+    >>> c.MAKE_CLOSURE(0, 0)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack underflow
+
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST(2) # simulate being a function
+    >>> c.MAKE_CLOSURE(1, 0)
+    >>> c.stack_size
+    1
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST(2)
+    >>> c.LOAD_CONST(3) # simulate being a function
+    >>> c.MAKE_CLOSURE(1, 1)
+    >>> c.stack_size
+    1
 
 
 Labels and backpatching forward references::
-
-    >>> c = Code()
-    >>> ref = c.JUMP_ABSOLUTE()
-    >>> c.LOAD_CONST(1)
-    >>> ref()
-    >>> c.RETURN_VALUE()
-    >>> dis(c.code())
-      0           0 JUMP_ABSOLUTE            6
-                  3 LOAD_CONST               1 (1)
-            >>    6 RETURN_VALUE
-
-    >>> c = Code()
-    >>> ref = c.JUMP_FORWARD()
-    >>> c.LOAD_CONST(1)
-    >>> ref()
-    >>> c.RETURN_VALUE()
-    >>> dis(c.code())
-      0           0 JUMP_FORWARD             3 (to 6)
-                  3 LOAD_CONST               1 (1)
-            >>    6 RETURN_VALUE
 
     >>> c = Code()
     >>> lbl = c.label()
@@ -639,14 +972,6 @@ Labels and backpatching forward references::
     Traceback (most recent call last):
       ...
     AssertionError: Relative jumps can't go backwards
-
-    >>> c = Code()
-    >>> lbl = c.label()
-    >>> c.LOAD_CONST(1)
-    >>> ref = c.JUMP_ABSOLUTE(lbl)
-    >>> dis(c.code())
-      0     >>    0 LOAD_CONST               1 (1)
-                  3 JUMP_ABSOLUTE            0
 
 
 "Call" combinations::
@@ -706,9 +1031,27 @@ Cloning::
 TODO
 ====
 
-* Test free/cell ops (LOAD_CLOSURE, LOAD_DEREF, STORE_DEREF)
-* Test MAKE_FUNCTION/MAKE_CLOSURE
+* Constant folding
+    * ast_type(node): called function, Const, or node.__class__
+      * tuples are Const if their contents are; no other types are Const
+    * ast_children(node): tuple of argument values for curried types, const value,
+      or empty tuple.  If node is a tuple, the value must be flattened.
+    * is_const(node): ast_type(node) is Const
+    * const_value(node): ast_children(node)[0]
+    * Call() does the actual folding
+
+* Inline builtins (getattr, operator.getitem, etc.) to opcodes
+    * Getattr/Op/Unary("symbol", arg1 [, arg2]) node types -> Call() if folding
+    * Call() translates functions back to Ops if inlining
+
+* Pretty printing and short-naming of ASTs
+
+* Test NAME vs. FAST operators flag checks/sets
+
 * Test code flags generation/cloning
+
+* Document block handling (SETUP_*, POP_BLOCK, END_FINALLY) and make sure the
+  latter two have correct stack tracking
 
 
 
