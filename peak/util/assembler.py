@@ -32,12 +32,12 @@ CO_FUTURE_WITH_STATEMENT  = 0x8000      # Python 2.5+ only
 
 __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
 
-def additional_tests():
-    import doctest
-    return doctest.DocFileSuite(
-        'assembler.txt', package='peak.util.assembler',
-        optionflags=doctest.ELLIPSIS|doctest.NORMALIZE_WHITESPACE,
-    )
+
+
+
+
+
+
 
 class _nil(object):
     """Pseudo-None object used to work around ast_currying limitations"""

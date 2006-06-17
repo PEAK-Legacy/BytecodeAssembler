@@ -37,7 +37,7 @@ setup(
     author_email="peak@eby-sarna.com",
     license="PSF or ZPL",
 
-    test_suite = 'peak.util.assembler',
+    test_suite = 'test_assembler',
 
     packages = PACKAGES,
     namespace_packages = PACKAGES,
