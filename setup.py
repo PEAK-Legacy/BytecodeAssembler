@@ -9,7 +9,7 @@ from setuptools import setup
 
 # Metadata
 PACKAGE_NAME = "BytecodeAssembler"
-PACKAGE_VERSION = "0.0.2"
+PACKAGE_VERSION = "0.1"
 PACKAGES = ['peak', 'peak.util']
 
 def get_description():
@@ -29,7 +29,7 @@ def get_description():
 setup(
     name=PACKAGE_NAME,
     version=PACKAGE_VERSION,
-
+    url = "http://peak.telecommunity.com/DevCenter/BytecodeAssembler",
     description='Generate Python code objects by "assembling" bytecode',
     long_description = get_description(),
 

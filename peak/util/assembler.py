@@ -124,7 +124,9 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
 class Label(object):
     """A forward-referenceable location in a ``Code`` object"""
 
+    __slots__ = 'backpatches', 'resolution'
     def __init__(self):
+
         self.backpatches = []
         self.resolution = None
 
@@ -150,7 +152,6 @@ class Label(object):
                 else:
                     return method(self.resolution)
             locals()[opname[op]] = do_jump
-
     del do_jump
 
     def __call__(self, code):
@@ -159,7 +160,6 @@ class Label(object):
         self.resolution = resolution = len(code.co_code)
         for p in self.backpatches:
             if p: p()
-
 
 
 class Code:
