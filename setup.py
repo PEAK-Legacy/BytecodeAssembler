@@ -4,7 +4,6 @@
 
 import ez_setup
 ez_setup.use_setuptools()
-
 from setuptools import setup
 
 # Metadata
@@ -30,7 +29,8 @@ setup(
     name=PACKAGE_NAME,
     version=PACKAGE_VERSION,
     url = "http://peak.telecommunity.com/DevCenter/BytecodeAssembler",
-    description='Generate Python code objects by "assembling" bytecode',
+    description='Generate Python code objects by "assembling" bytecode'
+        ' (Now includes a functional/AST-oriented API, too!)',
     long_description = get_description(),
 
     author="Phillip J. Eby",
