@@ -142,32 +142,29 @@ supplied::
     {'x': 42}
 
 
-Jumps, Labels, and Blocks
--------------------------
+Jump Targets
+------------
 
-Opcodes that perform jumps or refer to addresses (which includes block-setup
-opcodes like ``SETUP_LOOP`` and ``SETUP_FINALLY``) can be invoked in one of
-two ways.  First, if you are jumping backwards (with ``JUMP_ABSOLUTE`` or
+Opcodes that perform jumps or refer to addresses can be invoked in one of
+two ways.  First, if you are jumping backwards (e.g. with ``JUMP_ABSOLUTE`` or
 ``CONTINUE_LOOP``), you can obtain the target bytecode offset using the
-``.label()`` method, and then later pass that label into the appropriate
+``.here()`` method, and then later pass that offset into the appropriate
 method::
 
     >>> c = Code()
-    >>> my_label = c.label()        # create a label at the start of the code
+    >>> where = c.here()         # get a location at the start of the code
 
     >>> c.LOAD_CONST(42)
-    >>> c.JUMP_ABSOLUTE(my_label)   # now jump back to it
-    <...>
+    >>> c.JUMP_ABSOLUTE(where)   # now jump back to it
 
     >>> dis(c.code())
       0     >>    0 LOAD_CONST               1 (42)
                   3 JUMP_ABSOLUTE            0
 
-But if you are jumping *forward* (or setting up a loop or a try block), you
-will need to call the jump or setup method without any arguments, and save the
-return value.  The return value of all jump and block-setup methods is a
-"forward reference" object that can be called later to indicate that the
-desired jump target has been reached::
+But if you are jumping *forward*, you will need to call the jump or setup
+method without any arguments.  The return value will be a "forward reference"
+object that can be called later to indicate that the desired jump target has
+been reached::
 
     >>> c = Code()
     >>> forward = c.JUMP_ABSOLUTE() # create a jump and a forward reference
@@ -186,12 +183,6 @@ desired jump target has been reached::
 
     >>> eval(c.code())
     23
-
-Note that ``Code`` objects do not currently implement any special handling
-for "block" operations like ``SETUP_EXCEPT`` and ``END_FINALLY``.  You will
-probably need to manually adjust the predicted stack size when working with
-these opcodes.  See the section below on `Code Attributes`_ for information
-on the ``stack_size`` and ``co_stacksize`` attributes of ``Code`` objects.
 
 
 Other Special Opcodes
@@ -303,11 +294,12 @@ global variable, respectively::
 
     >>> from peak.util.assembler import Global, Local
 
+    >>> c = Code()
     >>> c( Local('x'), Global('y') )
     >>> dis(c.code())
-      0           0 LOAD_CONST               1 ((1, 2, 3))
-                  3 LOAD_FAST                0 (x)
-                  6 LOAD_GLOBAL              0 (y)
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_GLOBAL              0 (y)
+
 
 As with simple constants and ``Const`` wrappers, these objects can be used to
 construct more complex expressions, like ``{a:(b,c)}``::
@@ -417,11 +409,11 @@ Both ``Return`` and ``return_()`` can be used with no argument, in which case
                   7 RETURN_VALUE
 
 
-Using Forward References As Targets
------------------------------------
+Labels and Jump Targets
+-----------------------
 
 The forward reference callbacks returned by jump operations are also usable
-as code generation targets, indicating that the jump should go to the
+as code generation values, indicating that the jump should go to the
 current location.  For example::
 
     >>> c = Code()
@@ -433,6 +425,145 @@ current location.  For example::
                   6 LOAD_CONST               2 (2)
              >>   9 LOAD_CONST               3 (3)
                  12 RETURN_VALUE
+
+However, there's an easier way to do the same thing, using ``Label`` objects::
+
+    >>> from peak.util.assembler import Label
+    >>> c = Code()
+    >>> skip = Label()
+
+    >>> c(skip.JUMP_FORWARD, 1, 2, skip, Return(3))
+    >>> dis(c.code())
+      0           0 JUMP_FORWARD             6 (to 9)
+                  3 LOAD_CONST               1 (1)
+                  6 LOAD_CONST               2 (2)
+             >>   9 LOAD_CONST               3 (3)
+                 12 RETURN_VALUE
+
+This approach has the advantage of being easy to use in complex trees.
+``Label`` objects have attributes corresponding to every opcode that uses a
+bytecode address argument.  Generating code for these attributes emits the
+the corresponding opcode, and generating code for the label itself defines
+where the previous opcodes will jump to.  Labels can have multiple jumps
+targeting them, either before or after they are defined.  But they can't be
+defined more than once::
+
+    >>> c(skip)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Label previously defined
+
+
+Constant Detection and Folding
+==============================
+
+The ``const_value()`` function can be used to check if an expression tree has
+a constant value, and to obtain that value.  Simple constants are returned
+as-is::
+
+    >>> from peak.util.assembler import const_value
+
+    >>> simple_values = [1, 2L, 3.0, 4j+5, "6", u"7", False, None, c.code()]
+
+    >>> map(const_value, simple_values)
+    [1, 2L, 3.0, (5+4j), '6', u'7', False, None, <code object <lambda> ...>]
+
+Values wrapped in a ``Const()`` are also returned as-is::
+
+    >>> map(const_value, map(Const, simple_values))
+    [1, 2L, 3.0, (5+4j), '6', u'7', False, None, <code object <lambda> ...>]
+
+But no other node types produce constant values; instead, ``NotAConstant`` is
+raised::
+
+    >>> const_value(Local('x'))
+    Traceback (most recent call last):
+      ...
+    NotAConstant: <bound method str.Local of 'x'>
+
+Tuples of constants are recursively replaced by constant tuples::
+
+    >>> const_value( (1,2) )
+    (1, 2)
+
+    >>> const_value( (1, (2, Const(3))) )
+    (1, (2, 3))
+
+But any non-constant values anywhere in the structure cause an error::
+
+    >>> const_value( (1,Global('y')) )
+    Traceback (most recent call last):
+      ...
+    NotAConstant: <bound method str.Global of 'y'>
+
+As do any types not previously described here::
+
+    >>> const_value([1,2])
+    Traceback (most recent call last):
+      ...
+    NotAConstant: [1, 2]
+
+Unless of course they're wrapped with ``Const``::
+
+    >>> const_value(Const([1,2]))
+    [1, 2]
+
+
+The ``Call`` wrapper can also do simple constant folding, if all of its input
+parameters are constants.  (Actually, the `args` and `kwargs` arguments must be
+*sequences* of constants and 2-tuples of constants, respectively.)
+
+If a ``Call`` can thus compute its value in advance, it does so, returning a
+``Const`` node instead of a ``Call`` node::
+
+    >>> Call( Const(type), [1] )
+    <bound method type.Const of <type 'int'>>
+
+Thus, you can also take the ``const_value()`` of such calls::
+
+    >>> const_value( Call( Const(dict), [], [('x',27)] ) )
+    {'x': 27}
+
+Which means that constant folding can propagate up an AST if the result is
+passed in to another ``Call``::
+
+    >>> Call(Const(type), [Call( Const(dict), [], [('x',27)] )])
+    <bound method type.Const of <type 'dict'>>
+
+Notice that this folding takes place eagerly, during AST construction.  If you
+want to implement delayed folding after constant propagation or variable
+substitution, you'll need to recreate the tree, or use your own custom AST
+types.  (See `Custom Code Generation`_, below.)
+
+Note that you can disable folding using the ``fold=False`` keyword argument to
+``Call``, if you want to ensure that even compile-time constants are computed
+at runtime.  Compare::
+
+    >>> c = Code()
+    >>> c( Call(Const(type), [1]) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (<type 'int'>)
+
+    >>> c = Code()
+    >>> c( Call(Const(type), [1], fold=False) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (<type 'type'>)
+                  3 LOAD_CONST               2 (1)
+                  6 CALL_FUNCTION            1
+
+Folding is also *automatically* disabled for calls with no arguments of any
+kind (such as ``globals()`` or ``locals()``), whose values are much more likely
+to change dynamically at runtime::
+
+    >>> c = Code()
+    >>> c( Call(Const(locals)) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (<built-in function locals>)
+                  3 CALL_FUNCTION            0
+
+Note, however, that folding is disabled for *any* zero-argument call,
+regardless of the thing being called.  It is not specific to ``locals()`` and
+``globals()``, in other words.
 
 
 Custom Code Generation
@@ -463,16 +594,21 @@ want to implement more sophisticated callables, perhaps something like::
     >>> def TryFinally(block1, block2, code=None):
     ...     if code is None:
     ...         return ast_curry(TryFinally, block1, block2)
-    ...     fwd = code.SETUP_FINALLY()
-    ...     code(block1, Code.POP_BLOCK, None, fwd, block2, Code.END_FINALLY)
+    ...     code(
+    ...         Code.SETUP_FINALLY,
+    ...             block1,
+    ...         Code.POP_BLOCK,
+    ...             block2,
+    ...         Code.END_FINALLY
+    ...     )
 
-    >>> def Stmt(value, code=None):
+    >>> def ExprStmt(value, code=None):
     ...     if code is None:
-    ...         return ast_curry(Stmt, value)
+    ...         return ast_curry(ExprStmt, value)
     ...     code( value, Code.POP_TOP )
 
     >>> c = Code()
-    >>> c( TryFinally(Stmt(1), Stmt(2)) )
+    >>> c( TryFinally(ExprStmt(1), ExprStmt(2)) )
     >>> dis(c.code())
       0           0 SETUP_FINALLY            8 (to 11)
                   3 LOAD_CONST               1 (1)
@@ -490,8 +626,8 @@ code pattern above, using a ``code=None`` final argument, and returning a
 curried version of the function if ``code is None``.  Otherwise, your function
 should simply do whatever is needed to "generate" the arguments.
 
-This is exactly the same way that ``Const``, ``Call``, ``Local``, etc. are
-implemented within ``peak.util.assembler``.
+(This is exactly the same pattern that ``peak.util.assembler`` uses internally
+to implement ``Const``, ``Call``, ``Local``, and other wrapper functions.)
 
 The ``ast_curry()`` utility function isn't quite perfect; due to a quirk of the
 ``instancemethod`` type, it can't save arguments whose value is ``None``: if
@@ -507,6 +643,49 @@ have objects that are hashable and comparable by default, as long as none of
 your child nodes are unhashable or incomparable.  This can be useful for
 algorithms that require comparing AST subtrees, such as common subexpression
 elimination.
+
+If you want to incorporate constant-folding into your AST nodes, you can do
+so by checking for constant values and folding them at either construction
+or code generation time.  For example, this ``And`` node type folds constants
+during code generation, by not generating unnecessary branches when it can
+prove which way a branch will go::
+
+    >>> from peak.util.assembler import NotAConstant
+
+    >>> def And(values, code=None):
+    ...     if code is None:
+    ...         return ast_curry(And, tuple(values))
+    ...     end = Label()
+    ...     for value in values[:-1]:
+    ...         try:
+    ...             if const_value(value):
+    ...                 continue    # true constants can be skipped
+    ...             else:           # and false ones end the chain right away
+    ...                 return code(value, end)
+    ...         except NotAConstant:    # but non-constants require code
+    ...             code(value, end.JUMP_IF_FALSE, Code.POP_TOP)
+    ...     code(values[-1], end)
+
+    >>> c = Code()
+    >>> c.return_( And([1, 2]) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (2)
+                  3 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( And([1, 2, Local('x')]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( And([Local('x'), False, 27]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 JUMP_IF_FALSE            4 (to 10)
+                  6 POP_TOP
+                  7 LOAD_CONST               1 (False)
+            >>   10 RETURN_VALUE
 
 
 Setting the Code's Calling Signature
@@ -700,6 +879,287 @@ co_stacksize
     ``co_stacksize``, you should increase the ``co_stacksize`` to match, so
     that ``co_stacksize`` is always the largest stack size the code will
     generate at runtime.
+
+
+Blocks, Loops, and Exception Handling
+=====================================
+
+The Python ``SETUP_FINALLY``, ``SETUP_EXCEPT``, and ``SETUP_LOOP`` opcodes
+all create "blocks" that go on the frame's "block stack" at runtime.  Each of
+these opcodes *must* be matched with *exactly one* ``POP_BLOCK`` opcode -- no
+more, and no less.  ``Code`` objects enforce this using an internal block stack
+that matches each setup with its corresponding ``POP_BLOCK``.  Trying to pop
+a nonexistent block, or trying to generate code when unclosed blocks exist is
+an error::
+
+    >>> c = Code()
+    >>> c.POP_BLOCK()
+    Traceback (most recent call last):
+      ...
+    AssertionError: Not currently in a block
+
+    >>> c.SETUP_FINALLY()
+    >>> c.code()
+    Traceback (most recent call last):
+      ...
+    AssertionError: 1 unclosed block(s)
+
+    >>> c.POP_BLOCK()
+    >>> c.code()
+    <code object <lambda> ...>
+
+``Code`` objects also check that the stack level as of a ``POP_BLOCK`` is the
+same as it was when the block was set up::
+
+    >>> c = Code()
+    >>> c.SETUP_LOOP()
+    >>> c.LOAD_CONST(23)
+    >>> c.POP_BLOCK()
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack level mismatch: actual=1 expected=0
+
+
+Exception Stack Size Adjustment
+-------------------------------
+
+When you ``POP_BLOCK`` for a ``SETUP_EXCEPT`` or ``SETUP_FINALLY``, the code's
+maximum stack size is raised to ensure that it's at least 3 items higher than
+the current stack size.  That way, there will be room for the items that Python
+puts on the stack when jumping to a block's exception handling code::
+
+    >>> c = Code()
+    >>> c.SETUP_FINALLY()
+    >>> c.stack_size, c.co_stacksize
+    (0, 0)
+    >>> c.POP_BLOCK()
+    >>> c.END_FINALLY()
+    >>> c.stack_size, c.co_stacksize
+    (0, 3)
+
+As you can see, the current stack size is unchanged, but the maximum stack size
+has increased.  This increase is relative to the current stack size, though;
+it's not an absolute increase::
+
+    >>> c = Code()
+    >>> c(1,2,3,4, *[Code.POP_TOP]*4)   # push 4 things, then pop 'em
+    >>> c.SETUP_FINALLY()
+    >>> c.POP_BLOCK()
+    >>> c.END_FINALLY()
+    >>> c.stack_size, c.co_stacksize
+    (0, 4)
+
+And this stack adjustment doesn't happen for loops, because they don't have
+exception handlers::
+
+    >>> c = Code()
+    >>> c.SETUP_LOOP()
+    >>> break_to = c.POP_BLOCK()
+    >>> c.stack_size, c.co_stacksize
+    (0, 0)
+
+
+Try/Except Blocks
+-----------------
+
+In the case of ``SETUP_EXCEPT``, the *current* stack size is also increased by
+3, because the code following the ``POP_BLOCK`` will be the exception handler
+and will thus always have exception items on the stack::
+
+    >>> c = Code()
+    >>> c.SETUP_EXCEPT()
+    >>> else_ = c.POP_BLOCK()
+    >>> c.stack_size, c.co_stacksize
+    (3, 3)
+
+When a ``POP_BLOCK()`` is matched with a ``SETUP_EXCEPT``, it automatically
+emits a ``JUMP_FORWARD`` and returns a forward reference that should be called
+back when the "else" clause or end of the entire try/except statement is
+reached::
+
+    >>> c.POP_TOP()     # get rid of exception info
+    >>> c.POP_TOP()
+    >>> c.POP_TOP()
+    >>> else_()
+    >>> c.return_()
+    >>> dis(c.code())
+      0           0 SETUP_EXCEPT             4 (to 7)
+                  3 POP_BLOCK
+                  4 JUMP_FORWARD             3 (to 10)
+            >>    7 POP_TOP
+                  8 POP_TOP
+                  9 POP_TOP
+            >>   10 LOAD_CONST               0 (None)
+                 13 RETURN_VALUE
+
+In the example above, an empty block executes with an exception handler that
+begins at offset 7.  When the block is done, it jumps forward to the end of
+the try/except construct at offset 10.  The exception handler does nothing but
+remove the exception information from the stack before it falls through to the
+end.
+
+Note, by the way, that it's usually easier to use labels to define blocks
+like this::
+
+    >>> c = Code()
+    >>> done = Label()
+    >>> c(
+    ...     done.SETUP_EXCEPT,
+    ...     done.POP_BLOCK,
+    ...         Code.POP_TOP, Code.POP_TOP, Code.POP_TOP,
+    ...     done,
+    ...     Return()
+    ... )
+
+    >>> dis(c.code())
+      0           0 SETUP_EXCEPT             4 (to 7)
+                  3 POP_BLOCK
+                  4 JUMP_FORWARD             3 (to 10)
+            >>    7 POP_TOP
+                  8 POP_TOP
+                  9 POP_TOP
+            >>   10 LOAD_CONST               0 (None)
+                 13 RETURN_VALUE
+
+Labels have a ``POP_BLOCK`` attribute that you can pass in when generating
+code.
+
+
+Try/Finally Blocks
+------------------
+
+When a ``POP_BLOCK()`` is matched with a ``SETUP_FINALLY``, it automatically
+emits a ``LOAD_CONST(None)``, so that when the corresponding ``END_FINALLY``
+is reached, it will know that the "try" block exited normally.  Thus, the
+normal pattern for producing a try/finally construct is as follows::
+
+    >>> c = Code()
+    >>> c.SETUP_FINALLY()
+    >>> # "try" suite goes here
+    >>> c.POP_BLOCK()
+    >>> # "finally" suite goes here
+    >>> c.END_FINALLY()
+
+And it produces code that looks like this::
+
+    >>> dis(c.code())
+      0           0 SETUP_FINALLY            4 (to 7)
+                  3 POP_BLOCK
+                  4 LOAD_CONST               0 (None)
+            >>    7 END_FINALLY
+
+The ``END_FINALLY`` opcode will remove 1, 2, or 3 values from the stack at
+runtime, depending on how the "try" block was exited.  In the case of simply
+"falling off the end" of the "try" block, however, the inserted
+``LOAD_CONST(None)`` puts one value on the stack, and that one value is popped
+off by the ``END_FINALLY``.  For that reason, ``Code`` objects treat
+``END_FINALLY`` as if it always popped exactly one value from the stack, even
+though at runtime this may vary.  This means that the estimated stack levels
+within the "finally" clause may not be accurate -- which is why ``POP_BLOCK()``
+adjusts the maximum expected stack size to accomodate up to three values being
+put on the stack by the Python interpreter for exception handling.
+
+
+Loops
+-----
+
+The ``POP_BLOCK`` for a loop marks the end of the loop body, and the beginning
+of the "else" clause, if there is one.  It returns a forward reference that
+should be called back either at the end of the "else" clause, or immediately if
+there is no "else".  Any ``BREAK_LOOP`` opcodes that appear in the loop body
+will jump ahead to the point at which the forward reference is resolved.
+
+Here, we'll generate a loop that counts down from 5 to 0, with an "else" clause
+that returns 42.  Three labels are needed: one to mark the end of the overall
+block, one that's looped back to, and one that marks the "else" clause::
+
+    >>> c = Code()
+    >>> block = Label()
+    >>> loop = Label()
+    >>> else_ = Label()
+    >>> c(
+    ...     block.SETUP_LOOP,
+    ...         5,      # initial setup - this could be a GET_ITER instead
+    ...     loop,
+    ...         else_.JUMP_IF_FALSE,        # while x:
+    ...         1, Code.BINARY_SUBTRACT,    #     x -= 1
+    ...         loop.CONTINUE_LOOP,
+    ...     else_,                          # else:
+    ...         Code.POP_TOP,
+    ...     block.POP_BLOCK,
+    ...         Return(42),                 #     return 42
+    ...     block,
+    ...     Return()
+    ... )
+
+    >>> dis(c.code())
+      0           0 SETUP_LOOP              19 (to 22)
+                  3 LOAD_CONST               1 (5)
+            >>    6 JUMP_IF_FALSE            7 (to 16)
+                  9 LOAD_CONST               2 (1)
+                 12 BINARY_SUBTRACT
+                 13 JUMP_ABSOLUTE            6
+            >>   16 POP_TOP
+                 17 POP_BLOCK
+                 18 LOAD_CONST               3 (42)
+                 21 RETURN_VALUE
+            >>   22 LOAD_CONST               0 (None)
+                 25 RETURN_VALUE
+
+    >>> eval(c.code())
+    42
+
+
+Break and Continue
+------------------
+
+The ``BREAK_LOOP`` and ``CONTINUE_LOOP`` opcodes can only be used inside of
+an active loop::
+
+    >>> c = Code()
+    >>> c.BREAK_LOOP()
+    Traceback (most recent call last):
+      ...
+    AssertionError: Not inside a loop
+
+    >>> c.CONTINUE_LOOP(c.here())
+    Traceback (most recent call last):
+      ...
+    AssertionError: Not inside a loop
+
+And ``CONTINUE_LOOP`` is automatically replaced with a ``JUMP_ABSOLUTE`` if
+it occurs directly inside a loop block::
+
+    >>> c.SETUP_LOOP()
+    >>> c.CONTINUE_LOOP(c.here())
+    >>> c.BREAK_LOOP()
+    >>> c.POP_BLOCK()()
+    >>> dis(c.code())
+      0           0 SETUP_LOOP               5 (to 8)
+            >>    3 JUMP_ABSOLUTE            3
+                  6 BREAK_LOOP
+                  7 POP_BLOCK
+
+In other words, ``CONTINUE_LOOP`` only really emits a ``CONTINUE_LOOP`` opcode
+if it's inside some other kind of block within the loop, e.g. a "try" clause::
+
+    >>> c = Code()
+    >>> c.SETUP_LOOP()
+    >>> loop = c.here()
+    >>> c.SETUP_FINALLY()
+    >>> c.CONTINUE_LOOP(loop)
+    >>> c.POP_BLOCK()
+    >>> c.END_FINALLY()
+    >>> c.POP_BLOCK()()
+    >>> dis(c.code())
+      0           0 SETUP_LOOP              12 (to 15)
+            >>    3 SETUP_FINALLY            7 (to 13)
+                  6 CONTINUE_LOOP            3
+                  9 POP_BLOCK
+                 10 LOAD_CONST               0 (None)
+            >>   13 END_FINALLY
+                 14 POP_BLOCK
+
 
 
 
@@ -966,9 +1426,9 @@ Stack levels for MAKE_FUNCTION/MAKE_CLOSURE::
 Labels and backpatching forward references::
 
     >>> c = Code()
-    >>> lbl = c.label()
+    >>> where = c.here()
     >>> c.LOAD_CONST(1)
-    >>> c.JUMP_IF_TRUE(lbl)
+    >>> c.JUMP_IF_TRUE(where)
     Traceback (most recent call last):
       ...
     AssertionError: Relative jumps can't go backwards
@@ -1028,17 +1488,118 @@ Cloning::
                  15 STORE_FAST               4 (a)
                  18 STORE_FAST               5 (b)
 
+Constant folding for *args and **kw::
+
+    >>> c = Code()
+    >>> c.return_(Call(Const(type), [], [], (1,)))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (<type 'int'>)
+                  3 RETURN_VALUE
+
+
+    >>> c = Code()
+    >>> c.return_(Call(Const(dict), [], [], [], Const({'x':1})))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ({'x': 1})
+                  3 RETURN_VALUE
+
+
+
+Demo: "Computed Goto"/"Switch Statement"
+========================================
+
+Finally, to give an example of a creative way to abuse Python bytecode, here
+is an implementation of a simple "switch/case/else" structure::
+
+    >>> from peak.util.assembler import LOAD_CONST, POP_BLOCK
+
+    >>> def Pass(code=None):
+    ...     if code is None:
+    ...         return Pass
+
+    >>> def NewConst(value, code=None):
+    ...     if code is None:
+    ...         return ast_curry(NewConst, value)
+    ...     code.emit_arg(LOAD_CONST, len(code.co_consts))
+    ...     code.co_consts.append(value)
+    ...     code.stackchange((0,1))
+
+    >>> import sys
+    >>> WHY_CONTINUE = {'2.3':5, '2.4':32, '2.5':32}[sys.version[:3]]
+
+    >>> def Switch(expr, cases, default=Pass, code=None):
+    ...     if code is None:
+    ...         return ast_curry(Switch, expr, tuple(cases), default)
+    ...
+    ...     d = {}
+    ...     else_block  = Label()
+    ...     cleanup     = Label()
+    ...     end_switch  = Label()
+    ...
+    ...     code(
+    ...         end_switch.SETUP_LOOP,
+    ...             Call(NewConst(d.get), [expr]),
+    ...         else_block.JUMP_IF_FALSE,
+    ...             WHY_CONTINUE, Code.END_FINALLY
+    ...     )
+    ...
+    ...     cursize = code.stack_size
+    ...     for key, value in cases:
+    ...         d[const_value(key)] = code.here()
+    ...         code(value, cleanup.JUMP_FORWARD)
+    ...
+    ...     code(
+    ...         else_block,
+    ...             Code.POP_TOP, default,
+    ...         cleanup,
+    ...             Code.POP_BLOCK,
+    ...         end_switch
+    ...     )
+
+    >>> c = Code()
+    >>> c.co_argcount=1
+    >>> c(Switch(Local('x'), [(1,Return(42)),(2,Return("foo"))], Return(27)))
+    >>> c.return_()
+
+    >>> f = new.function(c.code(), globals())
+    >>> f(1)
+    42
+    >>> f(2)
+    'foo'
+    >>> f(3)
+    27
+
+    >>> dis(c.code())
+      0           0 SETUP_LOOP              36 (to 39)
+                  3 LOAD_CONST               1 (<...method get of dict...>)
+                  6 LOAD_FAST                0 (x)
+                  9 CALL_FUNCTION            1
+                 12 JUMP_IF_FALSE           18 (to 33)
+                 15 LOAD_CONST               2 (...)
+                 18 END_FINALLY
+                 19 LOAD_CONST               3 (42)
+                 22 RETURN_VALUE
+                 23 JUMP_FORWARD            12 (to 38)
+                 26 LOAD_CONST               4 ('foo')
+                 29 RETURN_VALUE
+                 30 JUMP_FORWARD             5 (to 38)
+            >>   33 POP_TOP
+                 34 LOAD_CONST               5 (27)
+                 37 RETURN_VALUE
+            >>   38 POP_BLOCK
+            >>   39 LOAD_CONST               0 (None)
+                 42 RETURN_VALUE
+
+
 TODO
 ====
 
-* Constant folding
+* AST introspection
     * ast_type(node): called function, Const, or node.__class__
       * tuples are Const if their contents are; no other types are Const
     * ast_children(node): tuple of argument values for curried types, const value,
       or empty tuple.  If node is a tuple, the value must be flattened.
     * is_const(node): ast_type(node) is Const
-    * const_value(node): ast_children(node)[0]
-    * Call() does the actual folding
 
 * Inline builtins (getattr, operator.getitem, etc.) to opcodes
     * Getattr/Op/Unary("symbol", arg1 [, arg2]) node types -> Call() if folding
@@ -1049,9 +1610,4 @@ TODO
 * Test NAME vs. FAST operators flag checks/sets
 
 * Test code flags generation/cloning
-
-* Document block handling (SETUP_*, POP_BLOCK, END_FINALLY) and make sure the
-  latter two have correct stack tracking
-
-
 

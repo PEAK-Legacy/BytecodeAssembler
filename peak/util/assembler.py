@@ -4,11 +4,11 @@ from new import code, instancemethod
 from types import CodeType
 
 __all__ = [
-    'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'nil', 'ast_curry'
+    'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'nil', 'ast_curry',
+    'const_value', 'NotAConstant', 'Label',
 ]
 
 opcode = {}
-
 for op in range(256):
     name=opname[op]
     if name.startswith('<'): continue
@@ -44,6 +44,7 @@ class _nil(object):
     __slots__ = ()
     def __nonzero__(self): return False
     def __call__(self,code): code.LOAD_CONST(None)
+    def __repr__(self): return 'nil'
 
 nil = _nil()
 
@@ -77,47 +78,87 @@ def Local(name, code=None):
 def Return(value=None, code=None):
     if code is None:
         return ast_curry(Return, value)
-    code(value)
-    return code.RETURN_VALUE()
+    return code(value, Code.RETURN_VALUE)
 
-def Call(func, args=(), kwargs=(), star=None, dstar=None, code=None):
+def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
+
     if code is None:
-        return ast_curry(Call, func, args, kwargs, star, dstar)
+        if fold and (args or kwargs or star or dstar):
+            cv = const_value
+            try:
+                ffunc = cv(func)
+                fargs = map(cv,args)
+                fkw = dict([(cv(k),cv(v)) for k,v in kwargs])
+                if star: fargs.extend(cv(star))
+                if dstar: fkw.update(cv(dstar))
+            except NotAConstant:
+                pass
+            else:
+                return Const(ffunc(*fargs, **fkw))
 
-    code(func)
-    map(code, args)
+        return ast_curry(
+            Call, func, tuple(args), tuple(kwargs), star, dstar, fold
+        )
+
+    code(func, *args)
     for k,v in kwargs:
-        assert isinstance(k, basestring)
-        code.LOAD_CONST(k)
-        code(v)
-    if star: code(star)
-    if dstar: code(dstar)
+        code(k,v)
+
     argc = len(args)
     kwargc = len(kwargs)
 
     if star:
         if dstar:
-            code.CALL_FUNCTION_VAR_KW(argc, kwargc)
+            code(star, dstar)
+            return code.CALL_FUNCTION_VAR_KW(argc, kwargc)
         else:
-            code.CALL_FUNCTION_VAR(argc, kwargc)
+            code(star)
+            return code.CALL_FUNCTION_VAR(argc, kwargc)
     else:
         if dstar:
-            code.CALL_FUNCTION_KW(argc, kwargc)
+            code(dstar)
+            return code.CALL_FUNCTION_KW(argc, kwargc)
         else:
-            code.CALL_FUNCTION(argc, kwargc)
+            return code.CALL_FUNCTION(argc, kwargc)
 
+class Label(object):
+    """A forward-referenceable location in a ``Code`` object"""
 
+    def __init__(self):
+        self.backpatches = []
+        self.resolution = None
 
+    def SETUP_EXCEPT(self, code):
+        return self.backpatches.append(code.setup_block(SETUP_EXCEPT))
 
+    def SETUP_FINALLY(self, code):
+        return self.backpatches.append(code.setup_block(SETUP_FINALLY))
 
+    def SETUP_LOOP(self, code):
+        return self.backpatches.append(code.setup_block(SETUP_LOOP))
 
+    def POP_BLOCK(self, code):
+        self.backpatches[0] = code.POP_BLOCK()
 
+    for op in hasjrel+hasjabs:
+        if opname[op] not in locals():
+            def do_jump(self, code, op=op):
+                code.stackchange(stack_effects[op])
+                method = getattr(code, opname[op])
+                if self.resolution is None:
+                    return self.backpatches.append(method())
+                else:
+                    return method(self.resolution)
+            locals()[opname[op]] = do_jump
 
+    del do_jump
 
-
-
-
-
+    def __call__(self, code):
+        if self.resolution is not None:
+            raise AssertionError("Label previously defined")
+        self.resolution = resolution = len(code.co_code)
+        for p in self.backpatches:
+            if p: p()
 
 
 
@@ -140,6 +181,7 @@ class Code:
         self.co_varnames = []
         self.co_lnotab = array('B')
         self.emit = self.co_code.append
+        self.blocks = []
 
     def emit_arg(self, op, arg):
         emit = self.emit
@@ -150,7 +192,6 @@ class Code:
         emit(op)
         emit(arg&255)
         emit((arg>>8)&255)
-
 
 
 
@@ -266,7 +307,7 @@ class Code:
         self.stackchange((1+freevars+ndefaults,1))
         self.emit_arg(MAKE_CLOSURE, ndefaults)
 
-    def label(self):
+    def here(self):
         return len(self.co_code)
 
     def jump(self, op, arg=None):
@@ -277,13 +318,72 @@ class Code:
             self.co_code[posn-2] = target & 255
             self.co_code[posn-1] = (target>>8) & 255
         def lbl(code=None):
-            backpatch(self.label())
+            backpatch(self.here())
         self.emit_arg(op,0)
-        posn = self.label()
+        posn = self.here()
         if arg is not None:
             backpatch(arg)
-        return lbl
+        else:
+            return lbl
 
+    def setup_block(self, op):
+        jmp = self.jump(op)
+        self.blocks.append((op,self.stack_size,jmp))
+        return jmp
+
+    def SETUP_EXCEPT(self):
+        self.setup_block(SETUP_EXCEPT)
+
+    def SETUP_FINALLY(self):
+        self.setup_block(SETUP_FINALLY)
+
+    def SETUP_LOOP(self):
+        self.setup_block(SETUP_LOOP)
+
+    def raw_pop(self, stacksize):
+        if stacksize != self.stack_size:
+            raise AssertionError(
+                "Stack level mismatch: actual=%d expected=%d"
+                % (self.stack_size, stacksize)
+            )
+        self.emit(POP_BLOCK)
+
+    def POP_BLOCK(self):
+        if not self.blocks:
+            raise AssertionError("Not currently in a block")
+
+        why, level, fwd = self.blocks.pop()
+        self.raw_pop(level)
+        if why!=SETUP_LOOP:
+            self.stackchange((0,3))
+            if why==SETUP_FINALLY:
+                self.stackchange((3,0))
+                self.LOAD_CONST(None)
+                fwd()
+            else:
+                else_ = self.JUMP_FORWARD()
+                fwd()
+                return else_
+        else:
+            return fwd
+
+    def assert_loop(self):
+        for why,level,fwd in self.blocks:
+            if why==SETUP_LOOP:
+                return
+        raise AssertionError("Not inside a loop")
+
+    def BREAK_LOOP(self):
+        self.assert_loop()
+        self.emit(BREAK_LOOP)
+
+    def CONTINUE_LOOP(self, label):
+        self.assert_loop()
+        if self.blocks[-1][0]==SETUP_LOOP:
+            op = JUMP_ABSOLUTE  # more efficient if not in a nested block
+        else:
+            op = CONTINUE_LOOP
+        return self.jump(op, label)
 
     def __call__(self, *args):
         last = None
@@ -300,31 +400,13 @@ class Code:
         return last
 
     def return_(self, ob=None):
-        self(ob)
-        return self.RETURN_VALUE()
+        return self(ob, Code.RETURN_VALUE)
 
     def from_function(cls, function, copy_lineno=False):
         code = cls.from_code(function.func_code, copy_lineno)
         return code
 
     from_function = classmethod(from_function)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     def from_code(cls, code, copy_lineno=False):
         self = cls()
@@ -368,6 +450,9 @@ class Code:
 
 
     def code(self):
+        if self.blocks:
+            raise AssertionError("%d unclosed block(s)" % len(self.blocks))
+
         flags = self.co_flags & ~CO_NOFREE
 
         if not self.co_freevars and not self.co_cellvars:
@@ -393,9 +478,6 @@ for op in hasfree:
                 raise NameError("Undefined free or cell var", varname)
             self.emit_arg(op, arg)
         setattr(Code, opname[op], do_free)
-
-
-
 
 
 
@@ -490,9 +572,50 @@ generate_types = {
 
 
 
+class NotAConstant(Exception):
+    """The supplied value is not a constant expression tree"""
+
+def const_value(value):
+    """Return the constant value -- if any -- of an expression tree
+
+    Raises NotAConstant if the value or any child of the value are
+    not constants.
+    """
+    t = type(value)
+    if t is instancemethod:
+        if value.im_func is Const:
+            value = value.im_self
+        else:
+            raise NotAConstant(value)
+    elif t is tuple:
+        t = tuple(map(const_value,value))
+        if t==value:
+            return value
+        return t
+    elif generate_types.get(t) != Code.LOAD_CONST:
+        raise NotAConstant(value)
+    if value is nil:
+        value = None
+    return value
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class _se:
     """Quick way of defining static stack effects of opcodes"""
-    POP_TOP   = 1,0
+    POP_TOP   = END_FINALLY = 1,0
     ROT_TWO   = 2,2
     ROT_THREE = 3,3
     ROT_FOUR  = 4,4
