@@ -547,6 +547,9 @@ Unless of course they're wrapped with ``Const``::
     [1, 2]
 
 
+Folding Function Calls
+----------------------
+
 The ``Call`` wrapper can also do simple constant folding, if all of its input
 parameters are constants.  (Actually, the `args` and `kwargs` arguments must be
 *sequences* of constants and 2-tuples of constants, respectively.)
@@ -682,6 +685,11 @@ your child nodes are unhashable or incomparable.  This can be useful for
 algorithms that require comparing AST subtrees, such as common subexpression
 elimination.
 
+
+
+Constant Folding in Custom Targets
+----------------------------------
+
 If you want to incorporate constant-folding into your AST nodes, you can do
 so by checking for constant values and folding them at either construction
 or code generation time.  For example, this ``And`` node type folds constants
@@ -697,11 +705,11 @@ prove which way a branch will go::
     ...     for value in values[:-1]:
     ...         try:
     ...             if const_value(value):
-    ...                 continue    # true constants can be skipped
-    ...             else:           # and false ones end the chain right away
-    ...                 return code(value, end)
+    ...                 continue        # true constants can be skipped
     ...         except NotAConstant:    # but non-constants require code
     ...             code(value, end.JUMP_IF_FALSE, Code.POP_TOP)
+    ...         else:       # and false constants end the chain right away
+    ...             return code(value, end)
     ...     code(values[-1], end)
 
     >>> c = Code()
@@ -724,6 +732,40 @@ prove which way a branch will go::
                   6 POP_TOP
                   7 LOAD_CONST               1 (False)
             >>   10 RETURN_VALUE
+
+The above example only folds constants at code generation time, however.  You
+can also do constant folding at AST construction time, using the
+``folding_curry()`` function.  For example::
+
+    >>> from peak.util.assembler import folding_curry
+
+    >>> def Getattr(ob, name, code=None):
+    ...     try:
+    ...         name = const_value(name)
+    ...     except NotAConstant:
+    ...         return Call(Const(getattr), [ob, name])
+    ...     if code is None:
+    ...         return folding_curry(Getattr, ob, name)
+    ...     code(ob)
+    ...     code.LOAD_ATTR(name)
+
+    >>> const_value(Getattr(1, '__class__'))
+    <type 'int'>
+
+The ``folding_curry()`` function is essentially the same as ``ast_curry()``,
+unless all of the arguments it's given are recognized as constants.  In that
+case, ``folding_curry()`` will create a temporary ``Code`` object, and run the
+curried function against it, doing an ``eval()`` on the generated code and
+wrapping the result in a ``Const``.
+
+This isn't a very *fast* way of doing partial evaluation, but it makes it
+really easy to define new code generation targets without writing custom
+constant-folding code for each one.  Just use ``folding_curry()`` instead of
+``ast_curry()`` if you want your node constructor to be able to do eager
+evaluation.  If you need to, you can check your parameters in order to decide
+whether to call ``ast_curry()`` or ``folding_curry()``; this is in fact how
+``Call`` implements its ``fold`` argument and the suppression of folding when
+the call has no arguments.
 
 
 Setting the Code's Calling Signature
@@ -871,7 +913,7 @@ stack_size
     attribute if it is less than the new ``stack_size``.
 
 co_freevars
-    A tuple of strings naming a function's "cell" variables.  Defaults to an
+    A tuple of strings naming a function's "free" variables.  Defaults to an
     empty tuple.  A function's free variables are the variables it "inherits"
     from its surrounding scope.  If you're going to use this, you should set
     it only once, before generating any code that references any free *or* cell
@@ -1526,7 +1568,7 @@ Cloning::
                  15 STORE_FAST               4 (a)
                  18 STORE_FAST               5 (b)
 
-Constant folding for *args and **kw::
+Constant folding for ``*args`` and ``**kw``::
 
     >>> c = Code()
     >>> c.return_(Call(Const(type), [], [], (1,)))

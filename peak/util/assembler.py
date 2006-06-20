@@ -84,20 +84,12 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
 
     if code is None:
         if fold and (args or kwargs or star or dstar):
-            cv = const_value
-            try:
-                ffunc = cv(func)
-                fargs = map(cv,args)
-                fkw = dict([(cv(k),cv(v)) for k,v in kwargs])
-                if star: fargs.extend(cv(star))
-                if dstar: fkw.update(cv(dstar))
-            except NotAConstant:
-                pass
-            else:
-                return Const(ffunc(*fargs, **fkw))
-
-        return ast_curry(
-            Call, func, tuple(args), tuple(kwargs), star, dstar, fold
+            curry = folding_curry
+        else:
+            curry = ast_curry
+        return curry(
+            Call, func, tuple(args), tuple(kwargs), star or (), dstar or (),
+            fold
         )
 
     code(func, *args)
@@ -120,6 +112,14 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
             return code.CALL_FUNCTION_KW(argc, kwargc)
         else:
             return code.CALL_FUNCTION(argc, kwargc)
+
+
+
+
+
+
+
+
 
 class Label(object):
     """A forward-referenceable location in a ``Code`` object"""
@@ -599,17 +599,17 @@ def const_value(value):
     return value
 
 
-
-
-
-
-
-
-
-
-
-
-
+def folding_curry(f,*args):
+    """Like ast_curry, but returns a folded ``Const`` if possible"""
+    curried = ast_curry(f,*args)
+    try:
+        map(const_value,args)
+    except NotAConstant:
+        return curried
+    else:
+        c = Code()
+        c.return_(curried)
+        return Const(eval(c.code()))
 
 
 
