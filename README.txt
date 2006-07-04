@@ -14,6 +14,11 @@ generating code from high-level specifications.  This framework does most of
 the work needed to transform tree-like structures into linear bytecode
 instructions, and includes the ability to do compile-time constant folding.
 
+Changes since version 0.1:
+
+* Added stack tracking across jumps, globally verifying stack level prediction
+  consistency and rejecting dead code.
+
 Changes since version 0.0.1:
 
 * Added massive quantities of new documentation and examples
@@ -190,14 +195,17 @@ two ways.  First, if you are jumping backwards (e.g. with ``JUMP_ABSOLUTE`` or
 method::
 
     >>> c = Code()
-    >>> where = c.here()         # get a location at the start of the code
-
     >>> c.LOAD_CONST(42)
+    >>> where = c.here()         # get a location near the start of the code
+    >>> c.DUP_TOP()
+    >>> c.POP_TOP()
     >>> c.JUMP_ABSOLUTE(where)   # now jump back to it
 
     >>> dis(c.code())
-      0     >>    0 LOAD_CONST               1 (42)
-                  3 JUMP_ABSOLUTE            0
+      0           0 LOAD_CONST               1 (42)
+            >>    3 DUP_TOP
+                  4 POP_TOP
+                  5 JUMP_ABSOLUTE            3
 
 But if you are jumping *forward*, you will need to call the jump or setup
 method without any arguments.  The return value will be a "forward reference"
@@ -205,19 +213,23 @@ object that can be called later to indicate that the desired jump target has
 been reached::
 
     >>> c = Code()
-    >>> forward = c.JUMP_ABSOLUTE() # create a jump and a forward reference
+    >>> c.LOAD_CONST(99)
+    >>> forward = c.JUMP_IF_TRUE() # create a jump and a forward reference
 
     >>> c.LOAD_CONST(42)            # this is what we want to skip over
+    >>> c.POP_TOP()
 
     >>> forward()   # calling the reference changes the jump to point here
     >>> c.LOAD_CONST(23)
     >>> c.RETURN_VALUE()
 
     >>> dis(c.code())
-      0           0 JUMP_ABSOLUTE            6
-                  3 LOAD_CONST               1 (42)
-            >>    6 LOAD_CONST               2 (23)
-                  9 RETURN_VALUE
+      0           0 LOAD_CONST               1 (99)
+                  3 JUMP_IF_TRUE             4 (to 10)
+                  6 LOAD_CONST               2 (42)
+                  9 POP_TOP
+            >>   10 LOAD_CONST               3 (23)
+                 13 RETURN_VALUE
 
     >>> eval(c.code())
     23
@@ -439,12 +451,15 @@ Both ``Return`` and ``return_()`` can be used with no argument, in which case
 
     >>> c = Code()
     >>> c.return_()
+    >>> dis(c.code())
+      0           0 LOAD_CONST               0 (None)
+                  3 RETURN_VALUE
+
+    >>> c = Code()
     >>> c( Return() )
     >>> dis(c.code())
       0           0 LOAD_CONST               0 (None)
                   3 RETURN_VALUE
-                  4 LOAD_CONST               0 (None)
-                  7 RETURN_VALUE
 
 
 Labels and Jump Targets
@@ -455,14 +470,16 @@ as code generation values, indicating that the jump should go to the
 current location.  For example::
 
     >>> c = Code()
-    >>> forward = c.JUMP_FORWARD()
-    >>> c( 1, 2, forward, Return(3) )
+    >>> c.LOAD_CONST(99)
+    >>> forward = c.JUMP_IF_FALSE()
+    >>> c( 1, Code.POP_TOP, forward, Return(3) )
     >>> dis(c.code())
-      0           0 JUMP_FORWARD             6 (to 9)
-                  3 LOAD_CONST               1 (1)
-                  6 LOAD_CONST               2 (2)
-             >>   9 LOAD_CONST               3 (3)
-                 12 RETURN_VALUE
+      0           0 LOAD_CONST               1 (99)
+                  3 JUMP_IF_FALSE            4 (to 10)
+                  6 LOAD_CONST               2 (1)
+                  9 POP_TOP
+            >>   10 LOAD_CONST               3 (3)
+                 13 RETURN_VALUE
 
 However, there's an easier way to do the same thing, using ``Label`` objects::
 
@@ -470,13 +487,14 @@ However, there's an easier way to do the same thing, using ``Label`` objects::
     >>> c = Code()
     >>> skip = Label()
 
-    >>> c(skip.JUMP_FORWARD, 1, 2, skip, Return(3))
+    >>> c(99, skip.JUMP_IF_FALSE, 1, Code.POP_TOP, skip, Return(3))
     >>> dis(c.code())
-      0           0 JUMP_FORWARD             6 (to 9)
-                  3 LOAD_CONST               1 (1)
-                  6 LOAD_CONST               2 (2)
-             >>   9 LOAD_CONST               3 (3)
-                 12 RETURN_VALUE
+      0           0 LOAD_CONST               1 (99)
+                  3 JUMP_IF_FALSE            4 (to 10)
+                  6 LOAD_CONST               2 (1)
+                  9 POP_TOP
+            >>   10 LOAD_CONST               3 (3)
+                 13 RETURN_VALUE
 
 This approach has the advantage of being easy to use in complex trees.
 ``Label`` objects have attributes corresponding to every opcode that uses a
@@ -659,6 +677,7 @@ want to implement more sophisticated callables, perhaps something like::
             >>   11 LOAD_CONST               2 (2)
                  14 POP_TOP
                  15 END_FINALLY
+
 
 The ``ast_curry()`` utility function returns an ``instancemethod`` chain that
 binds the given arguments to the given function, creating a hashable and
@@ -907,10 +926,16 @@ co_flags
 
 stack_size
     The predicted height of the runtime value stack, as of the current opcode.
-    Its value is automatically updated by most opcodes, but you may want to
-    save and restore it for things like try/finally blocks.  If you increase
-    the value of this attribute, you should also update the ``co_stacksize``
-    attribute if it is less than the new ``stack_size``.
+    Its value is automatically updated by most opcodes, but if you are doing
+    something sufficiently tricky (as in the ``Switch`` demo, below) you may
+    need to explicitly set it.
+
+    The ``stack_size`` automatically becomes ``None`` after any unconditional
+    jump operations, such as ``JUMP_FORWARD``, ``BREAK_LOOP``, or
+    ``RETURN_VALUE``.  When the stack size is ``None``, the only operations
+    that can be performed are the resolving of forward references (which will
+    set the stack size to what it was when the reference was created), or
+    manually setting the stack size.
 
 co_freevars
     A tuple of strings naming a function's "free" variables.  Defaults to an
@@ -954,11 +979,112 @@ co_lnotab
 
 co_stacksize
     The maximum amount of stack space the code will require to run.  This
-    value is usually updated automatically as you generate code.  However, if
-    you manually set a new ``stack_size`` that is larger than the current
-    ``co_stacksize``, you should increase the ``co_stacksize`` to match, so
-    that ``co_stacksize`` is always the largest stack size the code will
-    generate at runtime.
+    value is updated automatically as you generate code or change
+    the ``stack_size`` attribute.
+
+
+
+Stack Size Tracking and Dead Code Detection
+===========================================
+
+``Code`` objects automatically track the predicted stack size as code is
+generated, by updating the ``stack_size`` attribute as each operation occurs.
+A history is kept so that backward jumps can be checked to ensure that the
+current stack height is the same as at the jump's target.  Similarly, when
+forward jumps are resolved, the stack size at the jump target is checked
+against the stack size at the jump's origin.  If there are multiple jumps to
+the same location, they must all have the same stack size at the origin and
+the destination.
+
+In addition, whenever any unconditional jump code is generated (i.e.
+``JUMP_FORWARD``, ``BREAK_LOOP``, ``CONTINUE_LOOP``, ``JUMP_ABSOLUTE``, or
+``RETURN_VALUE``), the predicted ``stack_size`` is set to ``None``.  This
+means that the ``Code`` object does not know what the stack size will be at
+the current location.  You cannot issue *any* instructions when the predicted
+stack size is ``None``, as you will receive an ``AssertionError``::
+
+    >>> c = Code()
+    >>> fwd = c.JUMP_FORWARD()
+    >>> print c.stack_size  # forward jump marks stack size as unknown
+    None
+
+    >>> c.LOAD_CONST(42)
+    Traceback (most recent call last):
+      ...
+    AssertionError: Unknown stack size at this location
+
+Instead, you must resolve a forward reference (or define a previously-jumped to
+label).  This will propagate the stack size at the source of the jump to the
+current location, updating the stack size::
+
+    >>> fwd()
+    >>> c.stack_size
+    0
+
+Note, by the way, that this means it is impossible for you to generate static
+"dead code".  In other words, you cannot generate code that isn't reachable.
+You should therefore check if ``stack_size`` is ``None`` before generating
+code that might be unreachable.  For example, consider this ``If``
+implementation::
+
+    >>> def Pass(code=None):
+    ...     if code is None:
+    ...         return Pass
+
+    >>> def If(cond, then, else_=Pass, code=None):
+    ...     if code is None:
+    ...         return ast_curry(If,cond,then,else_)
+    ...     else_clause = Label()
+    ...     end_if = Label()
+    ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    ...     code(end_if.JUMP_FORWARD, else_clause, Code.POP_TOP, else_)
+    ...     code(end_if)
+
+It works okay if there's no dead code::
+
+    >>> c = Code()
+    >>> c( If(23, 42, 55) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (23)
+                  3 JUMP_IF_FALSE            7 (to 13)
+                  6 POP_TOP
+                  7 LOAD_CONST               2 (42)
+                 10 JUMP_FORWARD             4 (to 17)
+            >>   13 POP_TOP
+                 14 LOAD_CONST               3 (55)
+
+But it breaks if you end the "then" block with a return::
+
+    >>> c = Code()
+    >>> c( If(23, Return(42), 55) )
+    Traceback (most recent call last):
+      ...
+    AssertionError: Unknown stack size at this location
+
+What we need is something like this instead::
+
+    >>> def If(cond, then, else_=Pass, code=None):
+    ...     if code is None:
+    ...         return ast_curry(If,cond,then,else_)
+    ...     else_clause = Label()
+    ...     end_if = Label()
+    ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    ...     if code.stack_size is not None:
+    ...         end_if.JUMP_FORWARD(code)
+    ...     code(else_clause, Code.POP_TOP, else_, end_if)
+
+As you can see, the dead code is now eliminated::
+
+    >>> c = Code()
+    >>> c( If(23, Return(42), 55) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (23)
+                  3 JUMP_IF_FALSE            5 (to 11)
+                  6 POP_TOP
+                  7 LOAD_CONST               2 (42)
+                 10 RETURN_VALUE
+            >>   11 POP_TOP
+                 12 LOAD_CONST               3 (55)
 
 
 Blocks, Loops, and Exception Handling
@@ -988,32 +1114,17 @@ an error::
     >>> c.code()
     <code object <lambda> ...>
 
-``Code`` objects also check that the stack level as of a ``POP_BLOCK`` is the
-same as it was when the block was set up::
-
-    >>> c = Code()
-    >>> c.SETUP_LOOP()
-    >>> c.LOAD_CONST(23)
-    >>> c.POP_BLOCK()
-    Traceback (most recent call last):
-      ...
-    AssertionError: Stack level mismatch: actual=1 expected=0
-
 
 Exception Stack Size Adjustment
 -------------------------------
 
-When you ``POP_BLOCK`` for a ``SETUP_EXCEPT`` or ``SETUP_FINALLY``, the code's
-maximum stack size is raised to ensure that it's at least 3 items higher than
+When you issue a ``SETUP_EXCEPT`` or ``SETUP_FINALLY``, the code's maximum
+stack size is raised to ensure that it's at least 3 items higher than
 the current stack size.  That way, there will be room for the items that Python
 puts on the stack when jumping to a block's exception handling code::
 
     >>> c = Code()
     >>> c.SETUP_FINALLY()
-    >>> c.stack_size, c.co_stacksize
-    (0, 0)
-    >>> c.POP_BLOCK()
-    >>> c.END_FINALLY()
     >>> c.stack_size, c.co_stacksize
     (0, 3)
 
@@ -1024,8 +1135,6 @@ it's not an absolute increase::
     >>> c = Code()
     >>> c(1,2,3,4, *[Code.POP_TOP]*4)   # push 4 things, then pop 'em
     >>> c.SETUP_FINALLY()
-    >>> c.POP_BLOCK()
-    >>> c.END_FINALLY()
     >>> c.stack_size, c.co_stacksize
     (0, 4)
 
@@ -1034,7 +1143,6 @@ exception handlers::
 
     >>> c = Code()
     >>> c.SETUP_LOOP()
-    >>> break_to = c.POP_BLOCK()
     >>> c.stack_size, c.co_stacksize
     (0, 0)
 
@@ -1042,9 +1150,9 @@ exception handlers::
 Try/Except Blocks
 -----------------
 
-In the case of ``SETUP_EXCEPT``, the *current* stack size is also increased by
-3, because the code following the ``POP_BLOCK`` will be the exception handler
-and will thus always have exception items on the stack::
+In the case of ``SETUP_EXCEPT``, the *current* stack size is increased by 3
+after a ``POP_BLOCK``, because the code that follows will be an exception
+handler and will thus always have exception items on the stack::
 
     >>> c = Code()
     >>> c.SETUP_EXCEPT()
@@ -1210,37 +1318,45 @@ an active loop::
 And ``CONTINUE_LOOP`` is automatically replaced with a ``JUMP_ABSOLUTE`` if
 it occurs directly inside a loop block::
 
+    >>> c.LOAD_CONST(57)
     >>> c.SETUP_LOOP()
+    >>> fwd = c.JUMP_IF_TRUE()
     >>> c.CONTINUE_LOOP(c.here())
+    >>> fwd()
     >>> c.BREAK_LOOP()
     >>> c.POP_BLOCK()()
     >>> dis(c.code())
-      0           0 SETUP_LOOP               5 (to 8)
-            >>    3 JUMP_ABSOLUTE            3
-                  6 BREAK_LOOP
-                  7 POP_BLOCK
+      0           0 LOAD_CONST               1 (57)
+                  3 SETUP_LOOP               8 (to 14)
+                  6 JUMP_IF_TRUE             3 (to 12)
+            >>    9 JUMP_ABSOLUTE            9
+            >>   12 BREAK_LOOP
+                 13 POP_BLOCK
 
 In other words, ``CONTINUE_LOOP`` only really emits a ``CONTINUE_LOOP`` opcode
 if it's inside some other kind of block within the loop, e.g. a "try" clause::
 
     >>> c = Code()
+    >>> c.LOAD_CONST(57)
     >>> c.SETUP_LOOP()
     >>> loop = c.here()
     >>> c.SETUP_FINALLY()
+    >>> fwd = c.JUMP_IF_TRUE()
     >>> c.CONTINUE_LOOP(loop)
+    >>> fwd()
     >>> c.POP_BLOCK()
     >>> c.END_FINALLY()
     >>> c.POP_BLOCK()()
     >>> dis(c.code())
-      0           0 SETUP_LOOP              12 (to 15)
-            >>    3 SETUP_FINALLY            7 (to 13)
-                  6 CONTINUE_LOOP            3
-                  9 POP_BLOCK
-                 10 LOAD_CONST               0 (None)
-            >>   13 END_FINALLY
-                 14 POP_BLOCK
-
-
+      0           0 LOAD_CONST               1 (57)
+                  3 SETUP_LOOP              15 (to 21)
+            >>    6 SETUP_FINALLY           10 (to 19)
+                  9 JUMP_IF_TRUE             3 (to 15)
+                 12 CONTINUE_LOOP            6
+            >>   15 POP_BLOCK
+                 16 LOAD_CONST               0 (None)
+            >>   19 END_FINALLY
+                 20 POP_BLOCK
 
 
 ----------------------
@@ -1286,17 +1402,21 @@ Line number tracking::
 
 Stack size tracking::
 
-    >>> c = Code()
-    >>> c.LOAD_CONST(1)
-    >>> c.POP_TOP()
-    >>> c.LOAD_CONST(2)
-    >>> c.LOAD_CONST(3)
+    >>> c = Code()          # 0
+    >>> c.LOAD_CONST(1)     # 1
+    >>> c.POP_TOP()         # 0
+    >>> c.LOAD_CONST(2)     # 1
+    >>> c.LOAD_CONST(3)     # 2
     >>> c.co_stacksize
     2
-    >>> c.BINARY_ADD()
-    >>> c.LOAD_CONST(4)
+    >>> c.stack_history
+    [0, ..., 1, 0, ..., 1]
+    >>> c.BINARY_ADD()      # 1
+    >>> c.LOAD_CONST(4)     # 2
     >>> c.co_stacksize
     2
+    >>> c.stack_history
+    [0, ..., 1, 0, 1, ..., 2, ..., 1]
     >>> c.LOAD_CONST(5)
     >>> c.LOAD_CONST(6)
     >>> c.co_stacksize
@@ -1331,6 +1451,44 @@ Stack underflow detection/recovery, and global/local variable names::
       0           0 LOAD_GLOBAL              0 (foo)
                   3 LOAD_ATTR                1 (bar)
                   6 DELETE_FAST              0 (baz)
+
+
+Stack tracking on jumps::
+
+    >>> c = Code()
+    >>> else_ = Label()
+    >>> end = Label()
+    >>> c(99, else_.JUMP_IF_TRUE, Code.POP_TOP, end.JUMP_FORWARD)
+    >>> c(else_, Code.POP_TOP, end)
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (99)
+                  3 JUMP_IF_TRUE             4 (to 10)
+                  6 POP_TOP
+                  7 JUMP_FORWARD             1 (to 11)
+            >>   10 POP_TOP
+
+    >>> c.stack_size
+    0
+    >>> c.stack_history
+    [0, 1, 1, 1, 1, 1, 1, 0, None, None, 1]
+
+    >>> c = Code()
+    >>> fwd = c.JUMP_FORWARD()
+    >>> c.LOAD_CONST(42)    # forward jump marks stack size unknown
+    Traceback (most recent call last):
+      ...
+    AssertionError: Unknown stack size at this location
+
+    >>> c.stack_size = 0
+    >>> c.LOAD_CONST(42)
+    >>> fwd()
+    Traceback (most recent call last):
+      ...
+    AssertionError: Stack level mismatch: actual=1 expected=0
+
+
+
+
 
 Sequence operators and stack tracking:
 
@@ -1597,13 +1755,6 @@ is an implementation of a simple "switch/case/else" structure::
     ...     if code is None:
     ...         return Pass
 
-    >>> def NewConst(value, code=None):
-    ...     if code is None:
-    ...         return ast_curry(NewConst, value)
-    ...     code.emit_arg(LOAD_CONST, len(code.co_consts))
-    ...     code.co_consts.append(value)
-    ...     code.stackchange((0,1))
-
     >>> import sys
     >>> WHY_CONTINUE = {'2.3':5, '2.4':32, '2.5':32}[sys.version[:3]]
 
@@ -1618,15 +1769,18 @@ is an implementation of a simple "switch/case/else" structure::
     ...
     ...     code(
     ...         end_switch.SETUP_LOOP,
-    ...             Call(NewConst(d.get), [expr]),
+    ...             Call(Const(d.get), [expr]),
     ...         else_block.JUMP_IF_FALSE,
     ...             WHY_CONTINUE, Code.END_FINALLY
     ...     )
     ...
-    ...     cursize = code.stack_size
+    ...     cursize = code.stack_size - 1   # adjust for removed WHY_CONTINUE
     ...     for key, value in cases:
     ...         d[const_value(key)] = code.here()
-    ...         code(value, cleanup.JUMP_FORWARD)
+    ...         code.stack_size = cursize
+    ...         code(value)
+    ...         if code.stack_size is not None: # if the code can fall through,
+    ...             code(cleanup.JUMP_FORWARD)  # jump forward to the cleanup
     ...
     ...     code(
     ...         else_block,
@@ -1650,25 +1804,23 @@ is an implementation of a simple "switch/case/else" structure::
     27
 
     >>> dis(c.code())
-      0           0 SETUP_LOOP              36 (to 39)
+      0           0 SETUP_LOOP              30 (to 33)
                   3 LOAD_CONST               1 (<...method get of dict...>)
                   6 LOAD_FAST                0 (x)
                   9 CALL_FUNCTION            1
-                 12 JUMP_IF_FALSE           18 (to 33)
+                 12 JUMP_IF_FALSE           12 (to 27)
                  15 LOAD_CONST               2 (...)
                  18 END_FINALLY
                  19 LOAD_CONST               3 (42)
                  22 RETURN_VALUE
-                 23 JUMP_FORWARD            12 (to 38)
-                 26 LOAD_CONST               4 ('foo')
-                 29 RETURN_VALUE
-                 30 JUMP_FORWARD             5 (to 38)
-            >>   33 POP_TOP
-                 34 LOAD_CONST               5 (27)
-                 37 RETURN_VALUE
-            >>   38 POP_BLOCK
-            >>   39 LOAD_CONST               0 (None)
-                 42 RETURN_VALUE
+                 23 LOAD_CONST               4 ('foo')
+                 26 RETURN_VALUE
+            >>   27 POP_TOP
+                 28 LOAD_CONST               5 (27)
+                 31 RETURN_VALUE
+                 32 POP_BLOCK
+            >>   33 LOAD_CONST               0 (None)
+                 36 RETURN_VALUE
 
 
 TODO

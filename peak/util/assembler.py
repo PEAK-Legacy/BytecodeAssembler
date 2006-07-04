@@ -125,19 +125,19 @@ class Label(object):
     """A forward-referenceable location in a ``Code`` object"""
 
     __slots__ = 'backpatches', 'resolution'
-    def __init__(self):
 
+    def __init__(self):
         self.backpatches = []
         self.resolution = None
 
     def SETUP_EXCEPT(self, code):
-        return self.backpatches.append(code.setup_block(SETUP_EXCEPT))
+        code.SETUP_EXCEPT(); self.backpatches.append(code.blocks[-1][-1])
 
     def SETUP_FINALLY(self, code):
-        return self.backpatches.append(code.setup_block(SETUP_FINALLY))
+        code.SETUP_FINALLY(); self.backpatches.append(code.blocks[-1][-1])
 
     def SETUP_LOOP(self, code):
-        return self.backpatches.append(code.setup_block(SETUP_LOOP))
+        code.SETUP_LOOP(); self.backpatches.append(code.blocks[-1][-1])
 
     def POP_BLOCK(self, code):
         self.backpatches[0] = code.POP_BLOCK()
@@ -145,7 +145,6 @@ class Label(object):
     for op in hasjrel+hasjabs:
         if opname[op] not in locals():
             def do_jump(self, code, op=op):
-                code.stackchange(stack_effects[op])
                 method = getattr(code, opname[op])
                 if self.resolution is None:
                     return self.backpatches.append(method())
@@ -162,7 +161,8 @@ class Label(object):
             if p: p()
 
 
-class Code:
+
+class Code(object):
     co_argcount = 0
     co_stacksize = 0
     co_flags = CO_OPTIMIZED | CO_NEWLOCALS      # typical usage
@@ -172,7 +172,7 @@ class Code:
     co_freevars = ()
     co_cellvars = ()
     _last_lineofs = 0
-    stack_size = 0
+    _ss = 0
 
     def __init__(self):
         self.co_code = array('B')
@@ -182,6 +182,7 @@ class Code:
         self.co_lnotab = array('B')
         self.emit = self.co_code.append
         self.blocks = []
+        self.stack_history = []
 
     def emit_arg(self, op, arg):
         emit = self.emit
@@ -192,7 +193,6 @@ class Code:
         emit(op)
         emit(arg&255)
         emit((arg>>8)&255)
-
 
 
 
@@ -234,12 +234,12 @@ class Code:
         self._last_line = lno
         self._last_lineofs = len(self.co_code)
 
-    def stackchange(self, (inputs,outputs)):
-        assert inputs<=self.stack_size, "Stack underflow"
-        if inputs or outputs:
-            ss = self.stack_size = self.stack_size + outputs - inputs
-            if outputs>inputs and ss>self.co_stacksize:
-                self.co_stacksize = ss
+
+
+
+
+
+
 
 
 
@@ -254,22 +254,19 @@ class Code:
         self.emit_arg(LOAD_CONST, arg)
 
 
-    def CALL_FUNCTION(self, argc=0, kwargc=0, op=CALL_FUNCTION):
-        self.stackchange((1+argc+2*kwargc,1))
+    def CALL_FUNCTION(self, argc=0, kwargc=0, op=CALL_FUNCTION, extra=0):
+        self.stackchange((1+argc+2*kwargc+extra,1))
         emit = self.emit
         emit(op); emit(argc); emit(kwargc)
 
     def CALL_FUNCTION_VAR(self, argc=0, kwargc=0):
-        self.stackchange((1,0))    # extra for *args
-        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_VAR)
+        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_VAR, 1)    # 1 for *args
 
     def CALL_FUNCTION_KW(self, argc=0, kwargc=0):
-        self.stackchange((1,0))    # extra for **kw
-        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_KW)
+        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_KW, 1)     # 1 for **kw
 
     def CALL_FUNCTION_VAR_KW(self, argc=0, kwargc=0):
-        self.stackchange((2,0))    # extra for *args, **kw
-        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_VAR_KW)
+        self.CALL_FUNCTION(argc,kwargc,CALL_FUNCTION_VAR_KW, 2) # 2 *args,**kw
 
     def BUILD_TUPLE(self, count):
         self.stackchange((count,1))
@@ -283,7 +280,10 @@ class Code:
         self.stackchange((1,count))
         self.emit_arg(UNPACK_SEQUENCE,count)
 
-
+    def RETURN_VALUE(self):
+        self.stackchange((1,0))
+        self.emit(RETURN_VALUE)
+        self.stack_unknown()
 
     def BUILD_SLICE(self, count):
         assert count in (2,3), "Invalid number of arguments for BUILD_SLICE"
@@ -310,21 +310,103 @@ class Code:
     def here(self):
         return len(self.co_code)
 
+    def set_stack_size(self, size):
+        if size<0:
+            raise AssertionError("Stack underflow")
+        if size>self.co_stacksize:
+            self.co_stacksize = size
+        bytes = len(self.co_code) - len(self.stack_history) + 1
+        if bytes>0:
+            self.stack_history.extend([self._ss]*bytes)
+        self._ss = size
+
+    def get_stack_size(self):
+        return self._ss
+
+    stack_size = property(get_stack_size, set_stack_size)
+
+
+    def stackchange(self, (inputs,outputs)):
+        if self._ss is None:
+            raise AssertionError("Unknown stack size at this location")
+
+        self.stack_size -= inputs   # check underflow
+        self.stack_size += outputs  # update maximum height
+
+
+    def stack_unknown(self):
+        self._ss = None
+
+
+    def branch_stack(self, location, expected):
+        if location >= len(self.stack_history):
+            if location > len(self.co_code):
+                raise AssertionError("Forward-looking stack prediction!",
+                    location, len(self.co_code)
+                )
+            actual = self.stack_size
+            if actual is None:
+                self.stack_size = actual = expected
+                self.stack_history[location] = actual
+        else:
+            actual = self.stack_history[location]
+            if actual is None:
+                self.stack_history[location] = actual = expected
+
+        if actual != expected:
+            raise AssertionError(
+                "Stack level mismatch: actual=%s expected=%s"
+                % (actual, expected)
+            )
+
+
+
+
+
+
+
+
+
     def jump(self, op, arg=None):
-        def backpatch(target):
+
+        def backpatch(offset):
+            target = offset
             if op not in hasjabs:
                 target = target - posn
                 assert target>=0, "Relative jumps can't go backwards"
             self.co_code[posn-2] = target & 255
             self.co_code[posn-1] = (target>>8) & 255
+            self.branch_stack(offset, old_level)
+
         def lbl(code=None):
             backpatch(self.here())
+
+        old_level = self.stack_size
         self.emit_arg(op,0)
         posn = self.here()
+
+        if op in (JUMP_FORWARD, JUMP_ABSOLUTE, CONTINUE_LOOP):
+            self.stack_unknown()
+
         if arg is not None:
             backpatch(arg)
         else:
             return lbl
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def setup_block(self, op):
         jmp = self.jump(op)
@@ -332,32 +414,31 @@ class Code:
         return jmp
 
     def SETUP_EXCEPT(self):
+        ss = self.stack_size
+        self.stack_size = ss+3  # simulate the level at "except:" time
         self.setup_block(SETUP_EXCEPT)
+        self.stack_size = ss    # restore the current level
 
     def SETUP_FINALLY(self):
+        ss = self.stack_size
+        self.stack_size = ss+3  # allow for exceptions
+        self.stack_size = ss+1  # simulate the level after the None is pushed
         self.setup_block(SETUP_FINALLY)
+        self.stack_size = ss    # restore original level
 
     def SETUP_LOOP(self):
         self.setup_block(SETUP_LOOP)
 
-    def raw_pop(self, stacksize):
-        if stacksize != self.stack_size:
-            raise AssertionError(
-                "Stack level mismatch: actual=%d expected=%d"
-                % (self.stack_size, stacksize)
-            )
-        self.emit(POP_BLOCK)
 
     def POP_BLOCK(self):
         if not self.blocks:
             raise AssertionError("Not currently in a block")
 
         why, level, fwd = self.blocks.pop()
-        self.raw_pop(level)
+        self.emit(POP_BLOCK)
+
         if why!=SETUP_LOOP:
-            self.stackchange((0,3))
             if why==SETUP_FINALLY:
-                self.stackchange((3,0))
                 self.LOAD_CONST(None)
                 fwd()
             else:
@@ -367,6 +448,7 @@ class Code:
         else:
             return fwd
 
+
     def assert_loop(self):
         for why,level,fwd in self.blocks:
             if why==SETUP_LOOP:
@@ -374,8 +456,8 @@ class Code:
         raise AssertionError("Not inside a loop")
 
     def BREAK_LOOP(self):
-        self.assert_loop()
-        self.emit(BREAK_LOOP)
+        self.assert_loop(); self.emit(BREAK_LOOP)
+        self.stack_unknown()
 
     def CONTINUE_LOOP(self, label):
         self.assert_loop()
@@ -652,7 +734,7 @@ class _se:
         LOAD_CLOSURE = LOAD_DEREF = IMPORT_NAME = BUILD_MAP = 0,1
 
     EXEC_STMT = BUILD_CLASS = 3,0
-
+    JUMP_IF_TRUE = JUMP_IF_FALSE = 1,1
 
 stack_effects = [(0,0)]*256
 
