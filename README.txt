@@ -20,7 +20,7 @@ Changes since version 0.1:
   differing types (e.g. ``1.0`` and ``True``), or equal unhashable objects
   (e.g. two empty lists).
 
-* Removed ``nil`, ``ast_curry()`` and ``folding_curry()``, replacing them with
+* Removed ``nil``, ``ast_curry()`` and ``folding_curry()``, replacing them with
   the ``nodetype()`` decorator and ``fold_args()``; please see the docs for
   more details.
 
@@ -779,7 +779,8 @@ Among the benefits of this decorator are:
     ExprStmt(2,)
 
 * Hashing and comparison work as expected (handy for algorithms that require
-comparing or caching AST subtrees, such as common subexpression elimination)::
+  comparing or caching AST subtrees, such as common subexpression
+  elimination)::
 
     >>> ExprStmt(1) == ExprStmt(1)
     True
