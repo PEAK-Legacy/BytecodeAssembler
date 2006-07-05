@@ -5,7 +5,7 @@ from types import CodeType
 
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
-    'NotAConstant', 'Label', 'fold_args',
+    'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node'
 ]
 
 opcode = {}
@@ -80,6 +80,11 @@ class Const(object):
 
 
 
+class Node(tuple):
+    """Base class for AST nodes"""
+    __slots__ = []
+
+
 def nodetype(*mixins, **kw):
 
     def callback(frame, name, func, old_locals):
@@ -109,15 +114,10 @@ def nodetype(*mixins, **kw):
                 d[a] = property(lambda self, p=p+1: self[p])
 
         d.update(kw)
-        return type(name, mixins+(tuple,), d)
+        return type(name, mixins+(Node,), d)
 
     from peak.util.decorators import decorate_assignment
     return decorate_assignment(callback)
-
-
-
-
-
 
 
 

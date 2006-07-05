@@ -1925,20 +1925,11 @@ is an implementation of a simple "switch/case/else" structure::
 TODO
 ====
 
-* AST introspection
-    * ast_type(node): called function, Const, or node.__class__
-      * tuples are Const if their contents are; no other types are Const
-    * ast_children(node): tuple of argument values for curried types, const value,
-      or empty tuple.  If node is a tuple, the value must be flattened.
-    * is_const(node): ast_type(node) is Const
-
-* Inline builtins (getattr, operator.getitem, etc.) to opcodes
-    * Getattr/Op/Unary("symbol", arg1 [, arg2]) node types -> Call() if folding
-    * Call() translates functions back to Ops if inlining
-
-* Pretty printing and short-naming of ASTs
-
 * Test NAME vs. FAST operators flag checks/sets
 
 * Test code flags generation/cloning
+
+* Exhaustive tests of all opcodes' stack history effects
+
+* YIELD_EXPR should set CO_GENERATOR; stack effects depend on Python version
 
