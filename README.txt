@@ -16,8 +16,18 @@ instructions, and includes the ability to do compile-time constant folding.
 
 Changes since version 0.1:
 
+* Constant handling has been fixed so that it doesn't confuse equal values of
+  differing types (e.g. ``1.0`` and ``True``), or equal unhashable objects
+  (e.g. two empty lists).
+
+* Removed ``nil`, ``ast_curry()`` and ``folding_curry()``, replacing them with
+  the ``nodetype()`` decorator and ``fold_args()``; please see the docs for
+  more details.
+
 * Added stack tracking across jumps, globally verifying stack level prediction
-  consistency and rejecting dead code.
+  consistency and automatically rejecting attempts to generate dead code.  It
+  should now be virtually impossible to accidentally generate bytecode that can
+  crash the interpreter.  (If you find a way, let me know!)
 
 Changes since version 0.0.1:
 
@@ -291,6 +301,18 @@ the ``LOAD_CONST`` method directly::
                  21 LOAD_CONST               0 (None)
                  24 LOAD_CONST               8 (<code object <lambda> at ...>)
 
+Note that although some values of different types may compare equal to each
+other, ``Code`` objects will not substitute a value of a different type than
+the one you requested::
+
+    >>> c = Code()
+    >>> c(1, True, 1.0, 1L)     # equal, but different types
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (True)
+                  6 LOAD_CONST               3 (1.0)
+                  9 LOAD_CONST               4 (1L)
+
 
 Simple Containers
 -----------------
@@ -334,6 +356,34 @@ regardless of its type::
 As you can see, the above creates code that references an actual tuple as
 a constant, rather than generating code to recreate the tuple using a series of
 ``LOAD_CONST`` operations followed by a ``BUILD_TUPLE``.
+
+If the value wrapped in a ``Const`` is not hashable, it is compared by identity
+rather than value.  This prevents equal mutable values from being reused by
+accident, e.g. if you plan to mutate the "constant" values later::
+
+    >>> c = Code()
+    >>> c(Const([]), Const([]))     # equal, but not the same object!
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ([])
+                  3 LOAD_CONST               2 ([])
+
+Thus, although ``Const`` objects hash and compare based on equality for
+hashable types::
+
+    >>> hash(Const(3)) == hash(3)
+    True
+    >>> Const(3)==Const(3)
+    True
+
+They hash and compare based on object identity for non-hashable types::
+
+    >>> c = Const([])
+    >>> hash(c) == hash(id(c.value))
+    True
+    >>> c == Const(c.value)     # compares equal if same object
+    True
+    >>> c == Const([])          # but is not equal to a merely equal object
+    False
 
 
 Local and Global Names
@@ -535,7 +585,7 @@ raised::
     >>> const_value(Local('x'))
     Traceback (most recent call last):
       ...
-    NotAConstant: <bound method str.Local of 'x'>
+    NotAConstant: Local('x',)
 
 Tuples of constants are recursively replaced by constant tuples::
 
@@ -550,7 +600,7 @@ But any non-constant values anywhere in the structure cause an error::
     >>> const_value( (1,Global('y')) )
     Traceback (most recent call last):
       ...
-    NotAConstant: <bound method str.Global of 'y'>
+    NotAConstant: Global('y',)
 
 As do any types not previously described here::
 
@@ -576,7 +626,7 @@ If a ``Call`` can thus compute its value in advance, it does so, returning a
 ``Const`` node instead of a ``Call`` node::
 
     >>> Call( Const(type), [1] )
-    <bound method type.Const of <type 'int'>>
+    Const(<type 'int'>)
 
 Thus, you can also take the ``const_value()`` of such calls::
 
@@ -587,7 +637,7 @@ Which means that constant folding can propagate up an AST if the result is
 passed in to another ``Call``::
 
     >>> Call(Const(type), [Call( Const(dict), [], [('x',27)] )])
-    <bound method type.Const of <type 'dict'>>
+    Const(<type 'dict'>)
 
 Notice that this folding takes place eagerly, during AST construction.  If you
 want to implement delayed folding after constant propagation or variable
@@ -646,13 +696,23 @@ generation target, e.g.::
 As you can see, the ``Code.DUP_TOP()`` is called on the code instance, causing
 a ``DUP_TOP`` opcode to be output.  This is sometimes a handy trick for
 accessing values that are already on the stack.  More commonly, however, you'll
-want to implement more sophisticated callables, perhaps something like::
+want to implement more sophisticated callables.
 
-    >>> from peak.util.assembler import ast_curry
+To make it easy to create diverse target types, a ``nodetype()`` decorator is
+provided::
+
+    >>> from peak.util.assembler import nodetype
+
+It allows you to create code generation target types using functions.  Your
+function should take one or more arguments, with a ``code=None`` optional
+argument in the last position.  It should check whether ``code is None`` when
+called, and if so, return a tuple of the preceding arguments.  If ``code``
+is not ``None``, then it should do whatever code generating tasks are required.
+For example::
 
     >>> def TryFinally(block1, block2, code=None):
     ...     if code is None:
-    ...         return ast_curry(TryFinally, block1, block2)
+    ...         return block1, block2
     ...     code(
     ...         Code.SETUP_FINALLY,
     ...             block1,
@@ -660,11 +720,29 @@ want to implement more sophisticated callables, perhaps something like::
     ...             block2,
     ...         Code.END_FINALLY
     ...     )
+    >>> TryFinally = nodetype()(TryFinally)
+
+Note: although the nodetype() generator can be used above the function
+definition in either Python 2.3 or 2.4, it cannot be done in a doctest under
+Python 2.3, so this document doesn't attempt to demonstrate that.  Under
+2.4, you would do something like this::
+
+    @nodetype()
+    def TryFinally(...):
+
+and code that needs to also work under 2.3 should do something like this::
+
+    nodetype()
+    def TryFinally(...):
+
+But to keep the examples here working with doctest, we'll be doing our
+``nodetype()`` calls after the end of the function definitions, e.g.::
 
     >>> def ExprStmt(value, code=None):
     ...     if code is None:
-    ...         return ast_curry(ExprStmt, value)
+    ...         return value,
     ...     code( value, Code.POP_TOP )
+    >>> ExprStmt = nodetype()(ExprStmt)
 
     >>> c = Code()
     >>> c( TryFinally(ExprStmt(1), ExprStmt(2)) )
@@ -678,32 +756,47 @@ want to implement more sophisticated callables, perhaps something like::
                  14 POP_TOP
                  15 END_FINALLY
 
+The ``nodetype()`` decorator is virtually identical to the ``struct()``
+decorator in the DecoratorTools package, except that it does not support
+``*args``, does not create a field for the ``code`` argument, and generates a
+``__call__()`` method that reinvokes the wrapped function to do the actual
+code generation.
 
-The ``ast_curry()`` utility function returns an ``instancemethod`` chain that
-binds the given arguments to the given function, creating a hashable and
-comparable data structure -- a trivial sort of "AST node".  Just follow the
-code pattern above, using a ``code=None`` final argument, and returning a
-curried version of the function if ``code is None``.  Otherwise, your function
-should simply do whatever is needed to "generate" the arguments.
+Among the benefits of this decorator are:
 
-(This is exactly the same pattern that ``peak.util.assembler`` uses internally
-to implement ``Const``, ``Call``, ``Local``, and other wrapper functions.)
+* It gives your node types a great debugging format::
 
-The ``ast_curry()`` utility function isn't quite perfect; due to a quirk of the
-``instancemethod`` type, it can't save arguments whose value is ``None``: if
-you pass a ``None`` argument to ``ast_curry()``, it will be replaced with a
-special ``nil`` object that tests as false, and generates a ``None`` constant
-when code is generated for it.  If your function accepts any arguments that
-might have a value of ``None``, you must correctly handle the cases where you
-receive a value of ``nil`` (found in ``peak.util.assembler``) instead of
-``None``.
+    >>> tf = TryFinally(ExprStmt(1), ExprStmt(2))
+    >>> tf
+    TryFinally(ExprStmt(1,), ExprStmt(2,))
 
-However, if you can use ``ast_curry()`` to generate your AST nodes, you will
-have objects that are hashable and comparable by default, as long as none of
-your child nodes are unhashable or incomparable.  This can be useful for
-algorithms that require comparing AST subtrees, such as common subexpression
-elimination.
+* It makes named fields accessible::
 
+    >>> tf.block1
+    ExprStmt(1,)
+
+    >>> tf.block2
+    ExprStmt(2,)
+
+* Hashing and comparison work as expected (handy for algorithms that require
+comparing or caching AST subtrees, such as common subexpression elimination)::
+
+    >>> ExprStmt(1) == ExprStmt(1)
+    True
+    >>> ExprStmt(1) == ExprStmt(2)
+    False
+
+
+Please see the `struct decorator documentation`_ for info on how to customize
+node types further.
+
+.. _struct decorator documentation: http://peak.telecommunity.com/DevCenter/DecoratorTools#the-struct-decorator
+
+Note: hashing only works if all the values you return in your argument tuple
+are hashable, so you should try to convert them if possible.  For example, if
+an argument accepts any sequence, you should probably convert it to a tuple
+before returning it.  Most of the examples in this document, and the node types
+supplied by ``peak.util.assembler`` itself do this.
 
 
 Constant Folding in Custom Targets
@@ -719,7 +812,7 @@ prove which way a branch will go::
 
     >>> def And(values, code=None):
     ...     if code is None:
-    ...         return ast_curry(And, tuple(values))
+    ...         return tuple(values),
     ...     end = Label()
     ...     for value in values[:-1]:
     ...         try:
@@ -730,6 +823,7 @@ prove which way a branch will go::
     ...         else:       # and false constants end the chain right away
     ...             return code(value, end)
     ...     code(values[-1], end)
+    >>> And = nodetype()(And)
 
     >>> c = Code()
     >>> c.return_( And([1, 2]) )
@@ -754,9 +848,9 @@ prove which way a branch will go::
 
 The above example only folds constants at code generation time, however.  You
 can also do constant folding at AST construction time, using the
-``folding_curry()`` function.  For example::
+``fold_args()`` function.  For example::
 
-    >>> from peak.util.assembler import folding_curry
+    >>> from peak.util.assembler import fold_args
 
     >>> def Getattr(ob, name, code=None):
     ...     try:
@@ -764,26 +858,29 @@ can also do constant folding at AST construction time, using the
     ...     except NotAConstant:
     ...         return Call(Const(getattr), [ob, name])
     ...     if code is None:
-    ...         return folding_curry(Getattr, ob, name)
+    ...         return fold_args(Getattr, ob, name)
     ...     code(ob)
     ...     code.LOAD_ATTR(name)
+    >>> Getattr = nodetype()(Getattr)
 
     >>> const_value(Getattr(1, '__class__'))
     <type 'int'>
 
-The ``folding_curry()`` function is essentially the same as ``ast_curry()``,
-unless all of the arguments it's given are recognized as constants.  In that
-case, ``folding_curry()`` will create a temporary ``Code`` object, and run the
-curried function against it, doing an ``eval()`` on the generated code and
-wrapping the result in a ``Const``.
+The ``fold_args()`` function tries to evaluate the node immediately, if all of
+its arguments are constants, by creating a temporary ``Code`` object, and
+running the supplied function against it, then doing an ``eval()`` on the
+generated code and wrapping the result in a ``Const``.  However, if any of the
+arguments are non-constant, the original arguments (less the function) are
+returned. This causes a normal node instance to be created instead of a
+``Const``.
 
 This isn't a very *fast* way of doing partial evaluation, but it makes it
 really easy to define new code generation targets without writing custom
-constant-folding code for each one.  Just use ``folding_curry()`` instead of
-``ast_curry()`` if you want your node constructor to be able to do eager
-evaluation.  If you need to, you can check your parameters in order to decide
-whether to call ``ast_curry()`` or ``folding_curry()``; this is in fact how
-``Call`` implements its ``fold`` argument and the suppression of folding when
+constant-folding code for each one.  Just ``return fold_args(ThisType, *args)``
+instead of ``return args``, if you want your node constructor to be able to do
+eager evaluation.  If you need to, you can check your parameters in order to
+decide whether to call ``fold_args()`` or not; this is in fact how ``Call``
+implements its ``fold`` argument and the suppression of folding when
 the call has no arguments.
 
 
@@ -1033,12 +1130,13 @@ implementation::
 
     >>> def If(cond, then, else_=Pass, code=None):
     ...     if code is None:
-    ...         return ast_curry(If,cond,then,else_)
+    ...         return cond, then, else_
     ...     else_clause = Label()
     ...     end_if = Label()
     ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
     ...     code(end_if.JUMP_FORWARD, else_clause, Code.POP_TOP, else_)
     ...     code(end_if)
+    >>> If = nodetype()(If)
 
 It works okay if there's no dead code::
 
@@ -1065,13 +1163,14 @@ What we need is something like this instead::
 
     >>> def If(cond, then, else_=Pass, code=None):
     ...     if code is None:
-    ...         return ast_curry(If,cond,then,else_)
+    ...         return cond, then, else_
     ...     else_clause = Label()
     ...     end_if = Label()
     ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
     ...     if code.stack_size is not None:
     ...         end_if.JUMP_FORWARD(code)
     ...     code(else_clause, Code.POP_TOP, else_, end_if)
+    >>> If = nodetype()(If)
 
 As you can see, the dead code is now eliminated::
 
@@ -1742,7 +1841,6 @@ Constant folding for ``*args`` and ``**kw``::
                   3 RETURN_VALUE
 
 
-
 Demo: "Computed Goto"/"Switch Statement"
 ========================================
 
@@ -1760,7 +1858,7 @@ is an implementation of a simple "switch/case/else" structure::
 
     >>> def Switch(expr, cases, default=Pass, code=None):
     ...     if code is None:
-    ...         return ast_curry(Switch, expr, tuple(cases), default)
+    ...         return expr, tuple(cases), default
     ...
     ...     d = {}
     ...     else_block  = Label()
@@ -1789,6 +1887,7 @@ is an implementation of a simple "switch/case/else" structure::
     ...             Code.POP_BLOCK,
     ...         end_switch
     ...     )
+    >>> Switch = nodetype()(Switch)
 
     >>> c = Code()
     >>> c.co_argcount=1

@@ -36,7 +36,7 @@ setup(
     author="Phillip J. Eby",
     author_email="peak@eby-sarna.com",
     license="PSF or ZPL",
-
+    install_requires = ['DecoratorTools>=1.2'],
     test_suite = 'test_assembler',
 
     packages = PACKAGES,

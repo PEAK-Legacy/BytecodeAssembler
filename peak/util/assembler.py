@@ -1,11 +1,11 @@
 from array import array
 from dis import *
-from new import code, instancemethod
+from new import code
 from types import CodeType
 
 __all__ = [
-    'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'nil', 'ast_curry',
-    'const_value', 'NotAConstant', 'Label',
+    'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
+    'NotAConstant', 'Label', 'fold_args',
 ]
 
 opcode = {}
@@ -39,35 +39,98 @@ __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
 
 
 
-class _nil(object):
-    """Pseudo-None object used to work around ast_currying limitations"""
-    __slots__ = ()
-    def __nonzero__(self): return False
-    def __call__(self,code): code.LOAD_CONST(None)
-    def __repr__(self): return 'nil'
+class Const(object):
+    """Wrapper to ensure constants are hashable even if mutable"""
 
-nil = _nil()
+    __slots__ = 'value', 'hash', 'hashable'
+    def __init__(self, value):
+        self.value = value
+        try:
+            self.hash = hash(value)
+        except TypeError:
+            self.hash = hash(id(value))
+            self.hashable = False
+        else:
+            self.hashable = True
 
-def ast_curry(f,*args):
-    for arg in args:
-        if arg is None:
-            arg = nil
-        f = instancemethod(f,arg,type(arg))
-    return f
+    def __repr__(self):
+        return "Const(%s)" % repr(self.value)
 
-def Const(value, code=None):
-    if code is None:
-        return ast_curry(Const, value)
-    code.LOAD_CONST(value)
+    def __hash__(self):
+        return self.hash
 
+    def __eq__(self, other):
+        if type(other) is not Const:
+            return False
+        if self.hashable:
+            return self.value == other.value
+        else:
+            return self.value is other.value
+
+    def __ne__(self, other):
+        return not self==other
+
+    def __call__(self, code):
+        code.LOAD_CONST(self.value)
+
+
+
+
+
+
+
+
+def nodetype(*mixins, **kw):
+
+    def callback(frame, name, func, old_locals):
+        def __new__(cls, *args, **kw):
+            result = func(*args, **kw)
+            if type(result) is tuple:
+                return tuple.__new__(cls, (cls,)+result)
+            else:
+                return result
+
+        def __repr__(self):
+            return name+tuple.__repr__(self[1:])
+
+        def __call__(self, code):
+            return func(*(self[1:]+(code,)))
+
+        import inspect
+        args = inspect.getargspec(func)[0]
+
+        d = dict(
+            __new__ = __new__, __repr__ = __repr__, __doc__=func.__doc__,
+            __module__ = func.__module__, __args__ = args, __slots__ = [],
+            __call__ = __call__
+        )
+        for p,a in enumerate(args[:-1]):    # skip 'code' argument
+            if isinstance(a,str):
+                d[a] = property(lambda self, p=p+1: self[p])
+
+        d.update(kw)
+        return type(name, mixins+(tuple,), d)
+
+    from peak.util.decorators import decorate_assignment
+    return decorate_assignment(callback)
+
+
+
+
+
+
+
+
+nodetype()
 def Global(name, code=None):
     if code is None:
-        return ast_curry(Global, name)
+        return name,
     code.LOAD_GLOBAL(name)
 
+nodetype()
 def Local(name, code=None):
     if code is None:
-        return ast_curry(Local, name)
+        return name,
     if name in code.co_cellvars or name in code.co_freevars:
         return code.LOAD_DEREF(name)
     elif code.co_flags & CO_OPTIMIZED:
@@ -75,22 +138,40 @@ def Local(name, code=None):
     else:
         return code.LOAD_NAME(name)
 
+nodetype()
 def Return(value=None, code=None):
     if code is None:
-        return ast_curry(Return, value)
+        return value,
     return code(value, Code.RETURN_VALUE)
 
-def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+nodetype()
+def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
     if code is None:
-        if fold and (args or kwargs or star or dstar):
-            curry = folding_curry
-        else:
-            curry = ast_curry
-        return curry(
-            Call, func, tuple(args), tuple(kwargs), star or (), dstar or (),
-            fold
+        data = (
+            func, tuple(args), tuple(kwargs), star or (), dstar or (), fold
         )
+        if fold and (args or kwargs or star or dstar):
+            return fold_args(Call, *data)
+        else:
+            return data
 
     code(func, *args)
     for k,v in kwargs:
@@ -112,6 +193,7 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
             return code.CALL_FUNCTION_KW(argc, kwargc)
         else:
             return code.CALL_FUNCTION(argc, kwargc)
+
 
 
 
@@ -246,13 +328,26 @@ class Code(object):
 
     def LOAD_CONST(self, const):
         self.stackchange((0,1))
+        pos = 0
+        hashable = True
         try:
-            arg = self.co_consts.index(const)
-        except ValueError:
-            arg = len(self.co_consts)
-            self.co_consts.append(const)
-        self.emit_arg(LOAD_CONST, arg)
-
+            hash(const)
+        except TypeError:
+            hashable = False
+        while 1:
+            try:
+                arg = self.co_consts.index(const, pos)
+                it = self.co_consts[arg]
+            except ValueError:
+                arg = len(self.co_consts)
+                self.co_consts.append(const)
+                break
+            else:
+                if type(it) is type(const) and (hashable or it is const):
+                    break
+            pos = arg+1
+            continue
+        return self.emit_arg(LOAD_CONST, arg)
 
     def CALL_FUNCTION(self, argc=0, kwargc=0, op=CALL_FUNCTION, extra=0):
         self.stackchange((1+argc+2*kwargc+extra,1))
@@ -310,6 +405,9 @@ class Code(object):
     def here(self):
         return len(self.co_code)
 
+
+
+
     def set_stack_size(self, size):
         if size<0:
             raise AssertionError("Stack underflow")
@@ -325,17 +423,30 @@ class Code(object):
 
     stack_size = property(get_stack_size, set_stack_size)
 
-
     def stackchange(self, (inputs,outputs)):
         if self._ss is None:
             raise AssertionError("Unknown stack size at this location")
-
         self.stack_size -= inputs   # check underflow
         self.stack_size += outputs  # update maximum height
 
-
     def stack_unknown(self):
         self._ss = None
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     def branch_stack(self, location, expected):
@@ -358,6 +469,18 @@ class Code(object):
                 "Stack level mismatch: actual=%s expected=%s"
                 % (actual, expected)
             )
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -657,6 +780,7 @@ generate_types = {
 class NotAConstant(Exception):
     """The supplied value is not a constant expression tree"""
 
+
 def const_value(value):
     """Return the constant value -- if any -- of an expression tree
 
@@ -664,11 +788,8 @@ def const_value(value):
     not constants.
     """
     t = type(value)
-    if t is instancemethod:
-        if value.im_func is Const:
-            value = value.im_self
-        else:
-            raise NotAConstant(value)
+    if t is Const:
+        value = value.value
     elif t is tuple:
         t = tuple(map(const_value,value))
         if t==value:
@@ -676,22 +797,24 @@ def const_value(value):
         return t
     elif generate_types.get(t) != Code.LOAD_CONST:
         raise NotAConstant(value)
-    if value is nil:
-        value = None
     return value
 
 
-def folding_curry(f,*args):
-    """Like ast_curry, but returns a folded ``Const`` if possible"""
-    curried = ast_curry(f,*args)
+def fold_args(f, *args):
+    """Return a folded ``Const`` or an argument tuple"""
+
     try:
-        map(const_value,args)
+        map(const_value, args)
     except NotAConstant:
-        return curried
+        return args
     else:
         c = Code()
-        c.return_(curried)
+        f(*args+(c,))
+        c.RETURN_VALUE()
         return Const(eval(c.code()))
+
+
+
 
 
 
