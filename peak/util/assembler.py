@@ -84,7 +84,6 @@ class Node(tuple):
     """Base class for AST nodes"""
     __slots__ = []
 
-
 def nodetype(*mixins, **kw):
 
     def callback(frame, name, func, old_locals):
@@ -96,7 +95,9 @@ def nodetype(*mixins, **kw):
                 return result
 
         def __repr__(self):
-            return name+tuple.__repr__(self[1:])
+            r = name + tuple.__repr__(self[1:])
+            if len(self)==2: return r[:-2]+')'  # nix trailing ','
+            return r
 
         def __call__(self, code):
             return func(*(self[1:]+(code,)))
@@ -118,7 +119,6 @@ def nodetype(*mixins, **kw):
 
     from peak.util.decorators import decorate_assignment
     return decorate_assignment(callback)
-
 
 
 nodetype()

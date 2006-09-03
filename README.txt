@@ -585,7 +585,7 @@ raised::
     >>> const_value(Local('x'))
     Traceback (most recent call last):
       ...
-    NotAConstant: Local('x',)
+    NotAConstant: Local('x')
 
 Tuples of constants are recursively replaced by constant tuples::
 
@@ -600,7 +600,7 @@ But any non-constant values anywhere in the structure cause an error::
     >>> const_value( (1,Global('y')) )
     Traceback (most recent call last):
       ...
-    NotAConstant: Global('y',)
+    NotAConstant: Global('y')
 
 As do any types not previously described here::
 
@@ -768,15 +768,15 @@ Among the benefits of this decorator are:
 
     >>> tf = TryFinally(ExprStmt(1), ExprStmt(2))
     >>> tf
-    TryFinally(ExprStmt(1,), ExprStmt(2,))
+    TryFinally(ExprStmt(1), ExprStmt(2))
 
 * It makes named fields accessible::
 
     >>> tf.block1
-    ExprStmt(1,)
+    ExprStmt(1)
 
     >>> tf.block2
-    ExprStmt(2,)
+    ExprStmt(2)
 
 * Hashing and comparison work as expected (handy for algorithms that require
   comparing or caching AST subtrees, such as common subexpression
