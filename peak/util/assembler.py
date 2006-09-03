@@ -2,10 +2,12 @@ from array import array
 from dis import *
 from new import code
 from types import CodeType
+from peak.util.symbols import Symbol
 
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
-    'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node'
+    'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node', 'Pass',
+    'Compare',
 ]
 
 opcode = {}
@@ -31,8 +33,6 @@ CO_FUTURE_ABSOLUTE_IMPORT = 0x4000      # Python 2.5+ only
 CO_FUTURE_WITH_STATEMENT  = 0x8000      # Python 2.5+ only
 
 __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
-
-
 
 
 
@@ -95,7 +95,7 @@ def nodetype(*mixins, **kw):
                 return result
 
         def __repr__(self):
-            r = name + tuple.__repr__(self[1:])
+            r = self.__class__.__name__ + tuple.__repr__(self[1:])
             if len(self)==2: return r[:-2]+')'  # nix trailing ','
             return r
 
@@ -144,11 +144,11 @@ def Return(value=None, code=None):
         return value,
     return code(value, Code.RETURN_VALUE)
 
+class _Pass(Symbol):
+    def __call__(self, code=None):
+        pass
 
-
-
-
-
+Pass = _Pass('Pass', __name__)
 
 
 
@@ -193,6 +193,47 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
             return code.CALL_FUNCTION_KW(argc, kwargc)
         else:
             return code.CALL_FUNCTION(argc, kwargc)
+
+
+
+
+
+
+
+
+
+
+nodetype()
+def Compare(expr, ops, code=None):
+    if code is None:
+        return fold_args(Compare, expr, tuple(ops))
+    if len(ops)==1:
+        op, arg = ops[0]
+        code(expr, arg)
+        return code.COMPARE_OP(op)
+    fail = Label()
+    finish = Label()
+    code(expr)
+    for op, arg in ops[:-1]:
+        code(arg)
+        code.DUP_TOP()
+        code.ROT_THREE()
+        code.COMPARE_OP(op)
+        fail.JUMP_IF_FALSE(code)
+        code.POP_TOP()
+    op, arg = ops[-1]
+    code(arg)
+    code.COMPARE_OP(op)
+    finish.JUMP_FORWARD(code)
+    fail(code)
+    code.ROT_TWO()
+    code.POP_TOP()
+    return finish(code)
+
+
+
+
+
 
 
 
@@ -516,9 +557,9 @@ class Code(object):
         else:
             return lbl
 
-
-
-
+    def COMPARE_OP(self, op):
+        self.stackchange((2,1))
+        self.emit_arg(COMPARE_OP, compares[op])
 
 
 
@@ -684,11 +725,11 @@ for op in hasfree:
             self.emit_arg(op, arg)
         setattr(Code, opname[op], do_free)
 
-
-
-
-
-
+compares = {}
+for value, name in enumerate(cmp_op):
+    compares[value] = value
+    compares[name] = value
+compares['<>'] = compares['!=']
 
 
 

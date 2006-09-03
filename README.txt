@@ -14,6 +14,20 @@ generating code from high-level specifications.  This framework does most of
 the work needed to transform tree-like structures into linear bytecode
 instructions, and includes the ability to do compile-time constant folding.
 
+Changes since version 0.2:
+
+* The ``repr()`` of AST nodes doesn't include a trailing comma for 1-argument
+  node types any more.
+
+* Added a ``Pass`` symbol that generates no code, and a ``Compare()`` node type
+  that does n-way comparisons.
+
+* The ``COMPARE_OP()`` method now accepts operator strings like ``"<="``,
+  ``"not in"``, ``"exception match"``, and so on, as well as numeric opcodes.
+  See the standard library's ``opcode`` module for a complete list of the
+  strings accepted (in the ``cmp_op`` tuple).  ``"<>"`` is also accepted as an
+  alias for ``"!="``.
+
 Changes since version 0.1:
 
 * Constant handling has been fixed so that it doesn't confuse equal values of
@@ -267,6 +281,30 @@ current stack size, for purposes of computing the required total stack size::
     >>> c.LOAD_CLOSURE('b')
     >>> c.LOAD_CONST(None)  # in real code, this'd be a Python code constant
     >>> c.MAKE_CLOSURE(0,2) # no defaults, 2 free vars in the new function
+
+The ``COMPARE_OP`` method takes an argument which can be a valid comparison
+integer constant, or a string containing a Python operator, e.g.::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(1)
+    >>> c.LOAD_CONST(2)
+    >>> c.COMPARE_OP('not in')
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (2)
+                  6 COMPARE_OP               7 (not in)
+
+The full list of valid operator strings can be found in the standard library's
+``opcode`` module.  ``"<>"`` is also accepted as an alias for ``"!="``::
+
+    >>> c.LOAD_CONST(3)
+    >>> c.COMPARE_OP('<>')
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (2)
+                  6 COMPARE_OP               7 (not in)
+                  9 LOAD_CONST               3 (3)
+                 12 COMPARE_OP               3 (!=)
 
 
 High-Level Code Generation
@@ -558,6 +596,70 @@ defined more than once::
     Traceback (most recent call last):
       ...
     AssertionError: Label previously defined
+
+
+N-Way Comparisons
+-----------------
+
+You can generate N-way comparisons using the ``Compare()`` node type::
+
+    >>> from peak.util.assembler import Compare
+
+    >>> c = Code()
+    >>> c(Compare(Local('a'), [('<', Local('b'))]))
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
+                  3 LOAD_FAST                1 (b)
+                  6 COMPARE_OP               0 (<)
+
+3-way comparisons generate code that's a bit more complex.  Here's a three-way
+comparison (``a<b<c``)::
+
+    >>> c = Code()
+    >>> c.return_(Compare(Local('a'), [('<', Local('b')), ('<', Local('c'))]))
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
+                  3 LOAD_FAST                1 (b)
+                  6 DUP_TOP
+                  7 ROT_THREE
+                  8 COMPARE_OP               0 (<)
+                 11 JUMP_IF_FALSE           10 (to 24)
+                 14 POP_TOP
+                 15 LOAD_FAST                2 (c)
+                 18 COMPARE_OP               0 (<)
+                 21 JUMP_FORWARD             2 (to 26)
+            >>   24 ROT_TWO
+                 25 POP_TOP
+            >>   26 RETURN_VALUE
+
+And a four-way (``a<b>c!=d``)::
+
+    >>> c = Code()
+    >>> c.return_(
+    ...     Compare( Local('a'), [
+    ...         ('<', Local('b')), ('>', Local('c')), ('!=', Local('d'))
+    ...     ])
+    ... )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
+                  3 LOAD_FAST                1 (b)
+                  6 DUP_TOP
+                  7 ROT_THREE
+                  8 COMPARE_OP               0 (<)
+                 11 JUMP_IF_FALSE           22 (to 36)
+                 14 POP_TOP
+                 15 LOAD_FAST                2 (c)
+                 18 DUP_TOP
+                 19 ROT_THREE
+                 20 COMPARE_OP               4 (>)
+                 23 JUMP_IF_FALSE           10 (to 36)
+                 26 POP_TOP
+                 27 LOAD_FAST                3 (d)
+                 30 COMPARE_OP               3 (!=)
+                 33 JUMP_FORWARD             2 (to 38)
+            >>   36 ROT_TWO
+                 37 POP_TOP
+            >>   38 RETURN_VALUE
 
 
 Constant Detection and Folding
@@ -1125,10 +1227,7 @@ You should therefore check if ``stack_size`` is ``None`` before generating
 code that might be unreachable.  For example, consider this ``If``
 implementation::
 
-    >>> def Pass(code=None):
-    ...     if code is None:
-    ...         return Pass
-
+    >>> from peak.util.assembler import Pass
     >>> def If(cond, then, else_=Pass, code=None):
     ...     if code is None:
     ...         return cond, then, else_
