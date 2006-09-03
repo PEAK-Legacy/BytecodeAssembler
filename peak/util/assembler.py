@@ -147,10 +147,10 @@ def Return(value=None, code=None):
 class _Pass(Symbol):
     def __call__(self, code=None):
         pass
+    def __nonzero__(self):
+        return False
 
 Pass = _Pass('Pass', __name__)
-
-
 
 
 
