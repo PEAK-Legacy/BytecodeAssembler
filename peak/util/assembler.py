@@ -7,7 +7,7 @@ from peak.util.symbols import Symbol
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
     'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node', 'Pass',
-    'Compare',
+    'Compare', 'And', 'Or',
 ]
 
 opcode = {}
@@ -232,6 +232,47 @@ def Compare(expr, ops, code=None):
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+nodetype()
+def And(values, code=None):
+    if code is None:
+        return fold_args(And, tuple(values))
+    end = Label()
+    for value in values[:-1]:
+        try:
+            if const_value(value):
+                continue        # true constants can be skipped
+        except NotAConstant:    # but non-constants require code
+            code(value, end.JUMP_IF_FALSE, Code.POP_TOP)
+        else:       # and false constants end the chain right away
+            return code(value, end)
+    code(values[-1], end)
+
+nodetype()
+def Or(values, code=None):
+    if code is None:
+        return fold_args(Or, tuple(values))
+    end = Label()
+    for value in values[:-1]:
+        try:
+            if not const_value(value):
+                continue        # false constants can be skipped
+        except NotAConstant:    # but non-constants require code
+            code(value, end.JUMP_IF_TRUE, Code.POP_TOP)
+        else:       # and true constants end the chain right away
+            return code(value, end)
+    code(values[-1], end)
 
 
 
@@ -845,7 +886,9 @@ def fold_args(f, *args):
     """Return a folded ``Const`` or an argument tuple"""
 
     try:
-        map(const_value, args)
+        for arg in args:
+            if arg is not Pass and arg is not None:
+                const_value(arg)
     except NotAConstant:
         return args
     else:
@@ -853,8 +896,6 @@ def fold_args(f, *args):
         f(*args+(c,))
         c.RETURN_VALUE()
         return Const(eval(c.code()))
-
-
 
 
 

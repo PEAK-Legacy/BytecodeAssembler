@@ -19,8 +19,9 @@ Changes since version 0.2:
 * The ``repr()`` of AST nodes doesn't include a trailing comma for 1-argument
   node types any more.
 
-* Added a ``Pass`` symbol that generates no code, and a ``Compare()`` node type
-  that does n-way comparisons.
+* Added a ``Pass`` symbol that generates no code, a ``Compare()`` node type
+  that does n-way comparisons, and ``And()`` and ``Or()`` node types for doing
+  logical operations.
 
 * The ``COMPARE_OP()`` method now accepts operator strings like ``"<="``,
   ``"not in"``, ``"exception match"``, and so on, as well as numeric opcodes.
@@ -777,6 +778,67 @@ regardless of the thing being called.  It is not specific to ``locals()`` and
 ``globals()``, in other words.
 
 
+Logical And/Or
+--------------
+
+You can evaluate logical and/or expressions using the ``And`` and ``Or`` node
+types::
+
+    >>> from peak.util.assembler import And, Or
+
+    >>> c = Code()
+    >>> c.return_( And([Local('x'), Local('y')]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 JUMP_IF_FALSE            4 (to 10)
+                  6 POP_TOP
+                  7 LOAD_FAST                1 (y)
+            >>   10 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( Or([Local('x'), Local('y')]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 JUMP_IF_TRUE             4 (to 10)
+                  6 POP_TOP
+                  7 LOAD_FAST                1 (y)
+            >>   10 RETURN_VALUE
+
+
+True or false constants are folded automatically, avoiding code generation
+for intermediate values that will never be used in the result::
+
+    >>> c = Code()
+    >>> c.return_( And([1, 2, Local('y')]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (y)
+                  3 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( And([1, 2, Local('y'), 0]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (y)
+                  3 JUMP_IF_FALSE            4 (to 10)
+                  6 POP_TOP
+                  7 LOAD_CONST               1 (0)
+            >>   10 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( Or([1, 2, Local('y')]) )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (1)
+                  3 RETURN_VALUE
+
+    >>> c = Code()
+    >>> c.return_( Or([False, Local('y'), 3]) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (y)
+                  3 JUMP_IF_TRUE             4 (to 10)
+                  6 POP_TOP
+                  7 LOAD_CONST               1 (3)
+            >>   10 RETURN_VALUE
+
+
 Custom Code Generation
 ======================
 
@@ -907,8 +969,9 @@ Constant Folding in Custom Targets
 
 If you want to incorporate constant-folding into your AST nodes, you can do
 so by checking for constant values and folding them at either construction
-or code generation time.  For example, this ``And`` node type folds constants
-during code generation, by not generating unnecessary branches when it can
+or code generation time.  For example, this ``And`` node type (a simpler
+version of the one included in ``peak.util.assembler``) folds constants during
+code generation, by not generating unnecessary branches when it can
 prove which way a branch will go::
 
     >>> from peak.util.assembler import NotAConstant
