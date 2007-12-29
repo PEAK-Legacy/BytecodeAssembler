@@ -162,8 +162,6 @@ def Getattr(ob, name, code=None):
     code(ob)
     code.LOAD_ATTR(name)
 
-
-
 nodetype()
 def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
     if code is None:
@@ -576,43 +574,43 @@ class Code(object):
 
     def jump(self, op, arg=None):
 
-        def backpatch(offset):
+        def jump_target(offset):
             target = offset
             if op not in hasjabs:
-                target = target - posn
+                target = target - (posn+3)
                 assert target>=0, "Relative jumps can't go backwards"
-            self.co_code[posn-2] = target & 255
-            self.co_code[posn-1] = (target>>8) & 255
+                if target>0xFFFF:
+                    target = offset - (posn+6)
+            return target
+
+        def backpatch(offset):
+            target = jump_target(offset)
+            if target>0xFFFF:
+                raise AssertionError("Forward jump span must be <64K bytes")
+            self.co_code[posn+1] = target & 255
+            self.co_code[posn+2] = (target>>8) & 255
             self.branch_stack(offset, old_level)
 
-        def lbl(code=None):
-            backpatch(self.here())
-
         old_level = self.stack_size
-        self.emit_arg(op,0)
         posn = self.here()
+
+        if arg is not None:
+            self.emit_arg(op, jump_target(arg))
+            self.branch_stack(arg, old_level)
+            lbl = None            
+        else:
+            self.emit_arg(op, 0)
+            def lbl(code=None):
+                backpatch(self.here())
 
         if op in (JUMP_FORWARD, JUMP_ABSOLUTE, CONTINUE_LOOP):
             self.stack_unknown()
 
-        if arg is not None:
-            backpatch(arg)
-        else:
-            return lbl
+        return lbl
 
     def COMPARE_OP(self, op):
         self.stackchange((2,1))
         self.emit_arg(COMPARE_OP, compares[op])
-
-
-
-
-
-
-
-
-
-
 
 
     def setup_block(self, op):
