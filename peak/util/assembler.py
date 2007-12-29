@@ -7,7 +7,7 @@ from peak.util.symbols import Symbol
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
     'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node', 'Pass',
-    'Compare', 'And', 'Or',
+    'Compare', 'And', 'Or', 'Getattr',
 ]
 
 opcode = {}
@@ -149,16 +149,18 @@ class _Pass(Symbol):
         pass
     def __nonzero__(self):
         return False
-
 Pass = _Pass('Pass', __name__)
 
-
-
-
-
-
-
-
+nodetype()
+def Getattr(ob, name, code=None):
+    try:
+        name = const_value(name)
+    except NotAConstant:
+        return Call(Const(getattr), [ob, name])
+    if code is None:
+        return fold_args(Getattr, ob, name)
+    code(ob)
+    code.LOAD_ATTR(name)
 
 
 
@@ -699,6 +701,7 @@ class Code(object):
         self = cls()
         if copy_lineno:
             self.set_lineno(code.co_firstlineno)
+            self.co_filename = code.co_filename
 
         import inspect
         args, var, kw = inspect.getargs(code)
@@ -731,7 +734,6 @@ class Code(object):
         return self
 
     from_code = classmethod(from_code)
-
 
 
 

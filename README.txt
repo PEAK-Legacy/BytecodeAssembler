@@ -16,6 +16,12 @@ instructions, and includes the ability to do compile-time constant folding.
 
 Changes since version 0.2:
 
+* Added a ``Getattr`` symbol that does static or dynamic attribute access and
+  constant folding
+
+* Fixed ``code.from_function()`` not copying the ``co_filename`` attribute when
+  ``copy_lineno`` was specified.
+
 * The ``repr()`` of AST nodes doesn't include a trailing comma for 1-argument
   node types any more.
 
@@ -470,6 +476,37 @@ variable, ``LOAD_DEREF`` is used instead::
       0           0 LOAD_NAME                0 (x)
                   3 LOAD_DEREF               0 (y)
                   6 LOAD_DEREF               1 (z)
+
+
+Obtaining Attributes
+--------------------
+
+The ``Getattr`` node type takes an expression and an attribute name.  The
+attribute name can be a constant string, in which case a ``LOAD_ATTR`` opcode
+is used, and constant folding is done if possible::
+
+    >>> from peak.util.assembler import Getattr
+
+    >>> c = Code()
+    >>> c(Getattr(Local('x'), '__class__'))
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_ATTR                0 (__class__)
+
+
+    >>> Getattr(Const(object), '__class__') # const expression, const result
+    Const(<type 'type'>)
+
+Or the attribute name can be an expression, in which case a ``getattr()`` call
+is compiled instead::
+
+    >>> c = Code()
+    >>> c(Getattr(Local('x'), Local('y')))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (<built-in function getattr>)
+                  3 LOAD_FAST                0 (x)
+                  6 LOAD_FAST                1 (y)
+                  9 CALL_FUNCTION            2
 
 
 Calling Functions and Methods
@@ -1049,6 +1086,8 @@ decide whether to call ``fold_args()`` or not; this is in fact how ``Call``
 implements its ``fold`` argument and the suppression of folding when
 the call has no arguments.
 
+(By the way, this same ``Getattr`` node type is also available
+
 
 Setting the Code's Calling Signature
 ====================================
@@ -1082,6 +1121,8 @@ function object::
     >>> c1 = Code.from_function(f1, copy_lineno=True)
     >>> c1.co_firstlineno
     1
+    >>> c1.co_filename is f1.func_code.co_filename
+    True
 
 If you create a ``Code`` instance from a function that has nested positional
 arguments, the returned code object will include a prologue to unpack the
@@ -1305,7 +1346,7 @@ It works okay if there's no dead code::
 
     >>> c = Code()
     >>> c( If(23, 42, 55) )
-    >>> dis(c.code())
+    >>> dis(c.code())   # Python 2.3 may peephole-optimize this code
       0           0 LOAD_CONST               1 (23)
                   3 JUMP_IF_FALSE            7 (to 13)
                   6 POP_TOP
@@ -1339,7 +1380,7 @@ As you can see, the dead code is now eliminated::
 
     >>> c = Code()
     >>> c( If(23, Return(42), 55) )
-    >>> dis(c.code())
+    >>> dis(c.code())   # Python 2.3 may peephole-optimize this code
       0           0 LOAD_CONST               1 (23)
                   3 JUMP_IF_FALSE            5 (to 11)
                   6 POP_TOP
