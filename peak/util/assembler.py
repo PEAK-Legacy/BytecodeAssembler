@@ -7,7 +7,7 @@ from peak.util.symbols import Symbol
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
     'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node', 'Pass',
-    'Compare', 'And', 'Or', 'Getattr',
+    'Compare', 'And', 'Or', 'Getattr', 'TryExcept', 'TryFinally', 'Suite',
 ]
 
 opcode = {}
@@ -202,6 +202,47 @@ def Call(func, args=(),kwargs=(), star=None,dstar=None, fold=True, code=None):
 
 
 
+
+nodetype()
+def TryExcept(body, handlers, else_=Pass, code=None):
+    if code is None:
+        return body, tuple(handlers), else_
+    okay = Label()
+    done = Label()
+    code(
+        okay.SETUP_EXCEPT,
+        body,
+        okay.POP_BLOCK
+    )
+    for typ, handler in handlers:
+        next_test = Label()
+        Compare(Code.DUP_TOP, [('exception match', typ)], code)
+        code(
+            next_test.JUMP_IF_FALSE, Code.POP_TOP,      # remove condition
+            Code.POP_TOP, Code.POP_TOP, Code.POP_TOP,   # remove exc info
+            handler
+        )
+        if code.stack_size is not None:
+            code(done.JUMP_FORWARD)
+        code(next_test, Code.POP_TOP)            # remove condition
+    code(Code.END_FINALLY)
+    code.stack_unknown()    # force stack level to come from end of body
+    code(okay, else_, done)
+
+nodetype()
+def Suite(body, code=None):
+    if code is None:
+        if body: return tuple(body),
+        return Pass
+    code(*body)
+
+nodetype()
+def TryFinally(body, handler, code=None):
+    if code is None:
+        return body, handler
+    code(
+        Code.SETUP_FINALLY, body, Code.POP_BLOCK, handler, Code.END_FINALLY
+    )
 
 nodetype()
 def Compare(expr, ops, code=None):
@@ -634,7 +675,6 @@ class Code(object):
     def SETUP_LOOP(self):
         self.setup_block(SETUP_LOOP)
 
-
     def POP_BLOCK(self):
         if not self.blocks:
             raise AssertionError("Not currently in a block")
@@ -647,12 +687,13 @@ class Code(object):
                 self.LOAD_CONST(None)
                 fwd()
             else:
+                if self.stack_size is None:
+                    self.stack_size = level-3
                 else_ = self.JUMP_FORWARD()
                 fwd()
                 return else_
         else:
             return fwd
-
 
     def assert_loop(self):
         for why,level,fwd in self.blocks:

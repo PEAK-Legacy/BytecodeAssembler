@@ -16,8 +16,10 @@ instructions, and includes the ability to do compile-time constant folding.
 
 Changes since version 0.2:
 
-* Added a ``Getattr`` symbol that does static or dynamic attribute access and
-  constant folding
+* Added ``Suite``, ``TryExcept``, and ``TryFinally`` node types
+
+* Added a ``Getattr`` node type that does static or dynamic attribute access
+  and constant folding
 
 * Fixed ``code.from_function()`` not copying the ``co_filename`` attribute when
   ``copy_lineno`` was specified.
@@ -361,7 +363,6 @@ the one you requested::
                   6 LOAD_CONST               3 (1.0)
                   9 LOAD_CONST               4 (1L)
 
-
 Simple Containers
 -----------------
 
@@ -433,6 +434,36 @@ They hash and compare based on object identity for non-hashable types::
     >>> c == Const([])          # but is not equal to a merely equal object
     False
 
+
+``Suite`` and ``Pass``
+----------------------
+
+On occasion, it's helpful to be able to group a sequence of opcodes,
+expressions, or statements together, to be passed as an argument to other node
+types.  The ``Suite`` node type accomplishes this::
+
+    >>> from peak.util.assembler import Suite, Pass
+
+    >>> c = Code()
+    >>> c.return_(Suite([Const(42), Code.DUP_TOP, Code.POP_TOP]))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 DUP_TOP
+                  4 POP_TOP
+                  5 RETURN_VALUE    
+
+And ``Pass`` is a shortcut for an empty ``Suite``, that generates nothing::
+
+    >>> Suite([])
+    Pass
+
+    >>> c = Code()
+    >>> c(Pass)
+    >>> c.return_(None)
+    >>> dis(c.code())
+      0           0 LOAD_CONST               0 (None)
+                  3 RETURN_VALUE    
+    
 
 Local and Global Names
 ----------------------
@@ -1334,7 +1365,6 @@ You should therefore check if ``stack_size`` is ``None`` before generating
 code that might be unreachable.  For example, consider this ``If``
 implementation::
 
-    >>> from peak.util.assembler import Pass
     >>> def If(cond, then, else_=Pass, code=None):
     ...     if code is None:
     ...         return cond, then, else_
@@ -1515,8 +1545,55 @@ like this::
             >>   10 LOAD_CONST               0 (None)
                  13 RETURN_VALUE
 
-Labels have a ``POP_BLOCK`` attribute that you can pass in when generating
-code.
+(Labels have a ``POP_BLOCK`` attribute that you can pass in when generating
+code.)
+
+And, for generating typical try/except blocks, you can use the ``TryExcept``
+node type, which takes a body, a sequence of exception-type/handler pairs,
+and an optional "else" clause::
+
+    >>> from peak.util.assembler import TryExcept
+    >>> c = Code()
+    >>> c.return_(
+    ...     TryExcept(
+    ...         Return(1),                                      # body
+    ...         [(Const(KeyError),2), (Const(TypeError),3)],    # handlers
+    ...         Return(4)                                       # else clause
+    ...     )
+    ... )
+
+    >>> dis(c.code())
+      0           0 SETUP_EXCEPT             8 (to 11)
+                  3 LOAD_CONST               1 (1)
+                  6 RETURN_VALUE
+                  7 POP_BLOCK
+                  8 JUMP_FORWARD            43 (to 54)
+            >>   11 DUP_TOP
+                 12 LOAD_CONST               2 (<type 'exceptions.KeyError'>)
+                 15 COMPARE_OP              10 (exception match)
+                 18 JUMP_IF_FALSE           10 (to 31)
+                 21 POP_TOP
+                 22 POP_TOP
+                 23 POP_TOP
+                 24 POP_TOP
+                 25 LOAD_CONST               3 (2)
+                 28 JUMP_FORWARD            27 (to 58)
+            >>   31 POP_TOP
+                 32 DUP_TOP
+                 33 LOAD_CONST               4 (<type 'exceptions.TypeError'>)
+                 36 COMPARE_OP              10 (exception match)
+                 39 JUMP_IF_FALSE           10 (to 52)
+                 42 POP_TOP
+                 43 POP_TOP
+                 44 POP_TOP
+                 45 POP_TOP
+                 46 LOAD_CONST               5 (3)
+                 49 JUMP_FORWARD             6 (to 58)
+            >>   52 POP_TOP
+                 53 END_FINALLY
+            >>   54 LOAD_CONST               6 (4)
+                 57 RETURN_VALUE
+            >>   58 RETURN_VALUE
 
 
 Try/Finally Blocks
@@ -1552,6 +1629,22 @@ though at runtime this may vary.  This means that the estimated stack levels
 within the "finally" clause may not be accurate -- which is why ``POP_BLOCK()``
 adjusts the maximum expected stack size to accomodate up to three values being
 put on the stack by the Python interpreter for exception handling.
+
+For your convenience, the ``TryFinally`` node type can also be used to generate
+try/finally blocks::
+
+    >>> from peak.util.assembler import TryFinally
+    >>> c = Code()
+    >>> c( TryFinally(ExprStmt(1), ExprStmt(2)) )
+    >>> dis(c.code())
+      0           0 SETUP_FINALLY            8 (to 11)
+                  3 LOAD_CONST               1 (1)
+                  6 POP_TOP
+                  7 POP_BLOCK
+                  8 LOAD_CONST               0 (None)
+            >>   11 LOAD_CONST               2 (2)
+                 14 POP_TOP
+                 15 END_FINALLY
 
 
 Loops
@@ -2055,10 +2148,6 @@ Finally, to give an example of a creative way to abuse Python bytecode, here
 is an implementation of a simple "switch/case/else" structure::
 
     >>> from peak.util.assembler import LOAD_CONST, POP_BLOCK
-
-    >>> def Pass(code=None):
-    ...     if code is None:
-    ...         return Pass
 
     >>> import sys
     >>> WHY_CONTINUE = {'2.3':5, '2.4':32, '2.5':32}[sys.version[:3]]
