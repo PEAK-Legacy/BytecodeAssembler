@@ -2140,6 +2140,49 @@ Constant folding for ``*args`` and ``**kw``::
       0           0 LOAD_CONST               1 ({'x': 1})
                   3 RETURN_VALUE
 
+Try/Except stack level tracking::
+
+    >>> def class_or_type_of(expr):
+    ...     return Suite([expr, TryExcept(
+    ...         Suite([Getattr(Code.DUP_TOP, '__class__'), Code.ROT_TWO]),
+    ...         [(Const(AttributeError), Call(Const(type), (Code.ROT_TWO,)))]
+    ...     )])
+
+    >>> def type_or_class(x): pass
+    >>> c = Code.from_function(type_or_class)
+    >>> c.return_(class_or_type_of(Local('x')))
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 SETUP_EXCEPT             9 (to 15)
+                  6 DUP_TOP
+                  7 LOAD_ATTR                0 (__class__)
+                 10 ROT_TWO
+                 11 POP_BLOCK
+                 12 JUMP_FORWARD            26 (to 41)
+            >>   15 DUP_TOP
+                 16 LOAD_CONST               1 (<type 'exceptions.AttributeError
+'>)
+                 19 COMPARE_OP              10 (exception match)
+                 22 JUMP_IF_FALSE           14 (to 39)
+                 25 POP_TOP
+                 26 POP_TOP
+                 27 POP_TOP
+                 28 POP_TOP
+                 29 LOAD_CONST               2 (<type 'type'>)
+                 32 ROT_TWO
+                 33 CALL_FUNCTION            1
+                 36 JUMP_FORWARD             2 (to 41)
+            >>   39 POP_TOP
+                 40 END_FINALLY
+            >>   41 RETURN_VALUE
+
+    >>> type_or_class.func_code = c.code()
+    >>> type_or_class(23)
+    <type 'int'>
+    
+
+
+
 
 Demo: "Computed Goto"/"Switch Statement"
 ========================================

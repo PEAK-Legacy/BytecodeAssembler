@@ -687,13 +687,13 @@ class Code(object):
                 self.LOAD_CONST(None)
                 fwd()
             else:
-                if self.stack_size is None:
-                    self.stack_size = level-3
+                self.stack_size = level-3   # stack level resets here
                 else_ = self.JUMP_FORWARD()
                 fwd()
                 return else_
         else:
             return fwd
+
 
     def assert_loop(self):
         for why,level,fwd in self.blocks:
