@@ -2160,8 +2160,7 @@ Try/Except stack level tracking::
                  11 POP_BLOCK
                  12 JUMP_FORWARD            26 (to 41)
             >>   15 DUP_TOP
-                 16 LOAD_CONST               1 (<type 'exceptions.AttributeError
-'>)
+                 16 LOAD_CONST               1 (<type 'exceptions.AttributeError'>)
                  19 COMPARE_OP              10 (exception match)
                  22 JUMP_IF_FALSE           14 (to 39)
                  25 POP_TOP
