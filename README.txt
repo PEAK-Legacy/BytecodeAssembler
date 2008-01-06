@@ -14,6 +14,10 @@ generating code from high-level specifications.  This framework does most of
 the work needed to transform tree-like structures into linear bytecode
 instructions, and includes the ability to do compile-time constant folding.
 
+Please see the `BytecodeAssembler reference manual`_ for more details.
+
+.. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
+
 Changes since version 0.2:
 
 * Added ``Suite``, ``TryExcept``, and ``TryFinally`` node types
@@ -84,7 +88,8 @@ fully supported.  Also note the following limitations:
 * The ``dis()`` module in Python 2.3 has a bug that makes it show incorrect
   line numbers when the difference between two adjacent line numbers is
   greater than 255.  This causes two shallow failures in the current test
-  suite when it's run under Python 2.3.
+  suite when it's run under Python 2.3.  (And there are two other expected
+  failures under Python 2.3 due to an automatic optimization.)
 
 If you find any other issues, please let me know.
 
@@ -94,6 +99,7 @@ change if I come up with a better way to do something.
 Questions and discussion regarding this software should be directed to the
 `PEAK Mailing List <http://www.eby-sarna.com/mailman/listinfo/peak>`_.
 
+.. _toc:
 .. contents:: **Table of Contents**
 
 
@@ -1569,7 +1575,7 @@ and an optional "else" clause::
                   7 POP_BLOCK
                   8 JUMP_FORWARD            43 (to 54)
             >>   11 DUP_TOP
-                 12 LOAD_CONST               2 (<type 'exceptions.KeyError'>)
+                 12 LOAD_CONST               2 (<...exceptions.KeyError...>)
                  15 COMPARE_OP              10 (exception match)
                  18 JUMP_IF_FALSE           10 (to 31)
                  21 POP_TOP
@@ -1580,7 +1586,7 @@ and an optional "else" clause::
                  28 JUMP_FORWARD            27 (to 58)
             >>   31 POP_TOP
                  32 DUP_TOP
-                 33 LOAD_CONST               4 (<type 'exceptions.TypeError'>)
+                 33 LOAD_CONST               4 (<...exceptions.TypeError...>)
                  36 COMPARE_OP              10 (exception match)
                  39 JUMP_IF_FALSE           10 (to 52)
                  42 POP_TOP
@@ -2160,7 +2166,7 @@ Try/Except stack level tracking::
                  11 POP_BLOCK
                  12 JUMP_FORWARD            26 (to 41)
             >>   15 DUP_TOP
-                 16 LOAD_CONST               1 (<type 'exceptions.AttributeError'>)
+                 16 LOAD_CONST               1 (<...exceptions.AttributeError...>)
                  19 COMPARE_OP              10 (exception match)
                  22 JUMP_IF_FALSE           14 (to 39)
                  25 POP_TOP
@@ -2271,3 +2277,4 @@ TODO
 
 * YIELD_EXPR should set CO_GENERATOR; stack effects depend on Python version
 
+* Test wide jumps and wide argument generation in general
