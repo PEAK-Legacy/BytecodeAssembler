@@ -1,6 +1,6 @@
 from array import array
 from dis import *
-from new import code
+from new import code, function
 from types import CodeType
 from peak.util.symbols import Symbol
 
@@ -315,14 +315,14 @@ def Or(values, code=None):
             return code(value, end)
     code(values[-1], end)
 
-
-
-
-
-
-
-
-
+def with_name(f, name):
+    try:
+        f.__name__=name
+        return f
+    except (TypeError,AttributeError):
+        return function(
+            f.func_code, f.func_globals, name, f.func_defaults, f.func_closure
+        )
 
 
 
@@ -355,7 +355,7 @@ class Label(object):
                     return self.backpatches.append(method())
                 else:
                     return method(self.resolution)
-            locals()[opname[op]] = do_jump
+            locals()[opname[op]] = with_name(do_jump, opname[op])
     del do_jump
 
     def __call__(self, code):
@@ -805,7 +805,7 @@ for op in hasfree:
             except ValueError:
                 raise NameError("Undefined free or cell var", varname)
             self.emit_arg(op, arg)
-        setattr(Code, opname[op], do_free)
+        setattr(Code, opname[op], with_name(do_free, opname[op]))
 
 compares = {}
 for value, name in enumerate(cmp_op):
@@ -831,7 +831,7 @@ for op in hasname:
             if op in (LOAD_NAME, STORE_NAME, DELETE_NAME):
                 # Can't use optimized local vars, so reset flags
                 self.co_flags &= ~CO_OPTIMIZED
-        setattr(Code, opname[op], do_name)
+        setattr(Code, opname[op], with_name(do_name, opname[op]))
 
 for op in haslocal:
     if not hasattr(Code, opname[op]):
@@ -847,14 +847,14 @@ for op in haslocal:
                 arg = len(self.co_varnames)
                 self.co_varnames.append(varname)
             self.emit_arg(op, arg)
-        setattr(Code, opname[op], do_local)
+        setattr(Code, opname[op], with_name(do_local, opname[op]))
 
 for op in hasjrel+hasjabs:
     if not hasattr(Code, opname[op]):
         def do_jump(self, address=None, op=op):
             self.stackchange(stack_effects[op])
             return self.jump(op, address)
-        setattr(Code, opname[op], do_jump)
+        setattr(Code, opname[op], with_name(do_jump, opname[op]))
 
 
 
@@ -1001,7 +1001,7 @@ for name in opcode:
             def do_op(self,op=op,se=stack_effects[op]):
                 self.stackchange(se); self.emit(op)
 
-        setattr(Code, name, do_op)
+        setattr(Code, name, with_name(do_op, name))
 
 
 
