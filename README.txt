@@ -2206,10 +2206,9 @@ Now let's create a doubly nested function, with some extras::
 
     >>> dis(f)
       0           0 LOAD_CLOSURE             0 (a)
-                  3 BUILD_TUPLE              1
-                  6 LOAD_CONST               1 (<... <lambda> ..., file "<string>", line -1>)
-                  9 MAKE_CLOSURE             0
-                 12 RETURN_VALUE
+                  ... LOAD_CONST               1 (<... <lambda> ..., file "<string>", line -1>)
+                  ... MAKE_CLOSURE             0
+                  ... RETURN_VALUE
 
     >>> dis(f())
       0           0 LOAD_DEREF               0 (a)

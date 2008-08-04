@@ -352,7 +352,8 @@ def Function(body, name='<lambda>', args=(), var=None, kw=None, defaults=(), cod
         frees = c.co_freevars
         for name in frees:
             code.LOAD_CLOSURE(name)
-        code.BUILD_TUPLE(len(frees))
+        if sys.version>='2.5':
+            code.BUILD_TUPLE(len(frees))
         code.LOAD_CONST(c)
         return code.MAKE_CLOSURE(len(defaults), len(frees))
     else:
@@ -362,7 +363,6 @@ def Function(body, name='<lambda>', args=(), var=None, kw=None, defaults=(), cod
 def ntuple(seq):
     if isinstance(seq, basestring): return seq
     return tuple(map(ntuple, seq))
-
 
 
 
