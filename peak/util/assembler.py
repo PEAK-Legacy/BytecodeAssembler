@@ -3,11 +3,15 @@ from dis import *
 from new import code, function
 from types import CodeType
 from peak.util.symbols import Symbol
+from peak.util.decorators import decorate_assignment, decorate
+import sys
 
 __all__ = [
     'Code', 'Const', 'Return', 'Global', 'Local', 'Call', 'const_value',
     'NotAConstant', 'Label', 'fold_args', 'nodetype', 'Node', 'Pass',
     'Compare', 'And', 'Or', 'Getattr', 'TryExcept', 'TryFinally', 'Suite',
+    'LocalAssign', 'UnpackSequence', 'For', 'If', 'YieldStmt', 'Function',
+    'ListComp', 'LCAppend',
 ]
 
 opcode = {}
@@ -33,10 +37,6 @@ CO_FUTURE_ABSOLUTE_IMPORT = 0x4000      # Python 2.5+ only
 CO_FUTURE_WITH_STATEMENT  = 0x8000      # Python 2.5+ only
 
 __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
-
-
-
-
 
 
 class Const(object):
@@ -117,8 +117,8 @@ def nodetype(*mixins, **kw):
         d.update(kw)
         return type(name, mixins+(Node,), d)
 
-    from peak.util.decorators import decorate_assignment
     return decorate_assignment(callback)
+
 
 
 nodetype()
@@ -245,6 +245,129 @@ def TryFinally(body, handler, code=None):
     )
 
 nodetype()
+def LocalAssign(name, code=None):
+    if code is None:
+        return name,
+    if name in code.co_cellvars or name in code.co_freevars:
+        return code.STORE_DEREF(name)
+    elif code.co_flags & CO_OPTIMIZED:
+        return code.STORE_FAST(name)
+    else:
+        return code.STORE_NAME(name)
+
+
+nodetype()
+def UnpackSequence(nodes, code=None):
+    if code is None:
+        return tuple(nodes),
+    code.UNPACK_SEQUENCE(len(nodes))
+    return code(*nodes)
+
+
+nodetype()
+def For(iterable, assign, body=Pass, code=None):
+    if code is None:
+        return iterable, assign, body
+    L1, L2 = Label(), Label()
+    return code(
+        iterable, Code.GET_ITER, L1, L2.FOR_ITER, assign, body,
+        L1.JUMP_ABSOLUTE, L2
+    )
+
+
+nodetype()
+def YieldStmt(value=None, code=None):
+    if code is None:
+        return value,
+    r = code(value, Code.YIELD_VALUE)
+    if stack_effects[YIELD_VALUE][1]:
+        code.POP_TOP()
+    return r
+
+
+nodetype()
+def ListComp(body, code=None):
+    if code is None:
+        return body,
+    code._tmp_level += 1
+    try:
+        temp = '_[%r]' % code._tmp_level
+        code.BUILD_LIST(0)
+        code.DUP_TOP()
+        if sys.version<"2.4":
+            code.LOAD_ATTR('append')
+        code.STORE_FAST(temp)
+        r = code(body)
+        code.DELETE_FAST(temp)
+    finally:
+        code._tmp_level -= 1
+    return r
+    
+
+nodetype()
+def LCAppend(value, code=None):
+    if code is None:
+        return value,
+    code.LOAD_FAST('_[%r]' % code._tmp_level)
+    r = code(value)
+    if sys.version<"2.4":
+        code.CALL_FUNCTION(1)
+        code.POP_TOP()
+    else:
+        code.LIST_APPEND()
+    return r
+
+
+
+
+
+
+
+
+
+
+nodetype()
+def If(cond, then, else_=Pass, code=None):
+    if code is None:
+        return cond, then, else_
+    else_clause = Label()
+    end_if = Label()
+    code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    if code.stack_size is not None:
+        end_if.JUMP_FORWARD(code)
+    code(else_clause, Code.POP_TOP, else_, end_if)
+
+nodetype()
+def Function(body, name='<lambda>', args=(), var=None, kw=None, defaults=(), code=None):
+    if code is None:
+        return body, name, ntuple(args), var, kw, tuple(defaults)
+    c = code.nested(name, args, var, kw)
+    c(body)
+    if c.stack_size is not None:
+        code.return_()
+    c = c.code(code)
+    if defaults:
+        code(*defaults)
+    if c.co_freevars:
+        frees = c.co_freevars
+        for name in frees:
+            code.LOAD_CLOSURE(name)
+        code.BUILD_TUPLE(len(frees))
+        code.LOAD_CONST(c)
+        return code.MAKE_CLOSURE(len(defaults), len(frees))
+    else:
+        code.LOAD_CONST(c)
+        return code.MAKE_FUNCTION(len(defaults))
+
+def ntuple(seq):
+    if isinstance(seq, basestring): return seq
+    return tuple(map(ntuple, seq))
+
+
+
+
+
+nodetype()
 def Compare(expr, ops, code=None):
     if code is None:
         return fold_args(Compare, expr, tuple(ops))
@@ -272,12 +395,12 @@ def Compare(expr, ops, code=None):
     return finish(code)
 
 
+fast_to_deref = {
+    LOAD_FAST: LOAD_DEREF,
+    STORE_FAST: STORE_DEREF,
+}
 
-
-
-
-
-
+deref_to_deref = dict([(k,k) for k in hasfree])
 
 
 
@@ -378,6 +501,7 @@ class Code(object):
     co_cellvars = ()
     _last_lineofs = 0
     _ss = 0
+    _tmp_level = 0
 
     def __init__(self):
         self.co_code = array('B')
@@ -399,11 +523,10 @@ class Code(object):
         emit(arg&255)
         emit((arg>>8)&255)
 
-
-
-
-
-
+    def locals_written(self):
+        vn = self.co_varnames
+        hl = dict.fromkeys([STORE_FAST, DELETE_FAST])
+        return dict.fromkeys([vn[arg] for ofs, op, arg in self if op in hl])
 
 
 
@@ -439,10 +562,10 @@ class Code(object):
         self._last_line = lno
         self._last_lineofs = len(self.co_code)
 
-
-
-
-
+    def YIELD_VALUE(self):
+        self.stackchange(stack_effects[YIELD_VALUE])
+        self.co_flags |= CO_GENERATOR
+        return self.emit(YIELD_VALUE)
 
 
 
@@ -614,7 +737,6 @@ class Code(object):
 
 
     def jump(self, op, arg=None):
-
         def jump_target(offset):
             target = offset
             if op not in hasjabs:
@@ -628,11 +750,14 @@ class Code(object):
             target = jump_target(offset)
             if target>0xFFFF:
                 raise AssertionError("Forward jump span must be <64K bytes")
-            self.co_code[posn+1] = target & 255
-            self.co_code[posn+2] = (target>>8) & 255
+            self.patch_arg(posn, 0, target)
             self.branch_stack(offset, old_level)
 
-        old_level = self.stack_size
+        if op==FOR_ITER:
+            old_level = self.stack_size = self.stack_size - 1
+            self.stack_size += 2
+        else:
+            old_level = self.stack_size
         posn = self.here()
 
         if arg is not None:
@@ -643,10 +768,8 @@ class Code(object):
             self.emit_arg(op, 0)
             def lbl(code=None):
                 backpatch(self.here())
-
         if op in (JUMP_FORWARD, JUMP_ABSOLUTE, CONTINUE_LOOP):
             self.stack_unknown()
-
         return lbl
 
     def COMPARE_OP(self, op):
@@ -730,20 +853,27 @@ class Code(object):
     def return_(self, ob=None):
         return self(ob, Code.RETURN_VALUE)
 
+    decorate(classmethod)
     def from_function(cls, function, copy_lineno=False):
         code = cls.from_code(function.func_code, copy_lineno)
         return code
 
-    from_function = classmethod(from_function)
 
+    decorate(classmethod)
     def from_code(cls, code, copy_lineno=False):
-        self = cls()
+        import inspect
+        self = cls.from_spec(code.co_name, *inspect.getargs(code))
         if copy_lineno:
             self.set_lineno(code.co_firstlineno)
             self.co_filename = code.co_filename
+        self.co_freevars = code.co_freevars     # XXX untested!
+        return self
 
-        import inspect
-        args, var, kw = inspect.getargs(code)
+    decorate(classmethod)
+    def from_spec(cls, name='<lambda>', args=(), var=None, kw=None):
+        self = cls()
+        self.co_name = name
+        self.co_argcount = len(args)
         self.co_varnames.extend(args)
         if var:
             self.co_varnames.append(var)
@@ -755,36 +885,133 @@ class Code(object):
         def tuple_arg(args):
             self.UNPACK_SEQUENCE(len(args))
             for arg in args:
-                if isinstance(arg, list):
+                if not isinstance(arg, basestring):
                     tuple_arg(arg)
                 else:
                     self.STORE_FAST(arg)
 
         for narg, arg in enumerate(args):
-            if isinstance(arg,list):
+            if not isinstance(arg, basestring):
                 dummy_name = '.'+str(narg)
                 self.co_varnames[narg] = dummy_name
                 self.LOAD_FAST(dummy_name)
                 tuple_arg(arg)
 
-        self.co_argcount = code.co_argcount
-        self.co_name     = code.co_name
-        self.co_freevars = code.co_freevars
         return self
 
-    from_code = classmethod(from_code)
+
+    def patch_arg(self, offset, oldarg, newarg):
+        code = self.co_code
+        if (oldarg>0xFFFF) != (newarg>0xFFFF):
+            raise AssertionError("Can't change argument size", oldarg, newarg)
+        code[offset+1] = newarg & 255
+        code[offset+2] = (newarg>>8) & 255
+        if newarg>0xFFFF:
+            newarg >>=16
+            code[offset-2] = newarg & 255
+            code[offset-1] = (newarg>>8) & 255
+
+    def nested(self, name='<lambda>', args=(), var=None, kw=None, cls=None):
+        if cls is None:
+            cls = Code
+        code = cls.from_spec(name, args, var, kw)
+        code.co_filename=self.co_filename
+        return code
+
+    def __iter__(self):
+        i = 0
+        extended_arg = 0
+        code = self.co_code
+        n = len(code)
+        while i < n:
+            op = code[i]
+            if op >= HAVE_ARGUMENT:
+                oparg = code[i+1] + code[i+2]*256 + extended_arg
+                extended_arg = 0
+                if op == EXTENDED_ARG:
+                    extended_arg = oparg*65536
+                    i+=3
+                    continue
+                yield i, op, oparg
+                i += 3
+            else:
+                yield i, op, None
+                i += 1
+        
 
 
 
+    def makefree(self, names):
+        nowfree = dict.fromkeys(self.co_freevars)
+        newfree = [n for n in names if n not in nowfree]
+        if newfree:
+            self.co_freevars += tuple(newfree)
+            self._locals_to_cells()
 
-    def code(self):
+    def makecells(self, names):
+        nowcells = dict.fromkeys(self.co_cellvars+self.co_freevars)
+        newcells = [n for n in names if n not in nowcells]
+        if newcells:
+            if not (self.co_flags & CO_OPTIMIZED):
+                raise AssertionError("Can't use cellvars in unoptimized scope")
+            cc = len(self.co_cellvars)
+            nc = len(newcells)
+            self.co_cellvars += tuple(newcells)
+            if self.co_freevars:
+                self._patch(
+                    deref_to_deref,
+                    dict([(n+cc,n+cc+nc)for n in range(len(self.co_freevars))])
+                )
+            self._locals_to_cells()
+
+    def _locals_to_cells(self):
+        freemap = dict(
+            [(n,p) for p,n in enumerate(self.co_cellvars+self.co_freevars)]
+        )
+        argmap = dict(
+            [(p,freemap[n]) for p,n in enumerate(self.co_varnames)
+                if n in freemap]
+        )
+        if argmap:
+            for ofs, op, arg in self:
+                if op==DELETE_FAST and arg in argmap:
+                    raise AssertionError(
+                        "Can't delete local %r used in nested scope"
+                        % self.co_varnames[arg]
+                    )
+            self._patch(fast_to_deref, argmap)
+
+
+    def _patch(self, opmap, argmap={}):
+        code = self.co_code
+        for ofs, op, arg in self:
+            if op in opmap:
+                if arg in argmap:
+                    self.patch_arg(ofs, arg, argmap[arg])
+                elif arg is not None:
+                    continue
+                code[ofs] = opmap[op]
+
+    def code(self, parent=None):
         if self.blocks:
             raise AssertionError("%d unclosed block(s)" % len(self.blocks))
 
         flags = self.co_flags & ~CO_NOFREE
+        if parent is not None:
+            locals_written = self.locals_written()
+            self.makefree([
+                n for n in self.co_varnames[
+                    self.co_argcount
+                    + ((self.co_flags & CO_VARARGS)==CO_VARARGS)
+                    + ((self.co_flags & CO_VARKEYWORDS)==CO_VARKEYWORDS)
+                    :
+                ] if n not in locals_written
+            ])
 
         if not self.co_freevars and not self.co_cellvars:
             flags |= CO_NOFREE
+        elif parent is not None and self.co_freevars:
+            parent.makecells(self.co_freevars)
 
         return code(
             self.co_argcount, len(self.co_varnames),
@@ -814,10 +1041,6 @@ for value, name in enumerate(cmp_op):
 compares['<>'] = compares['!=']
 
 
-
-
-
-
 for op in hasname:
     if not hasattr(Code, opname[op]):
         def do_name(self, name, op=op):
@@ -832,6 +1055,14 @@ for op in hasname:
                 # Can't use optimized local vars, so reset flags
                 self.co_flags &= ~CO_OPTIMIZED
         setattr(Code, opname[op], with_name(do_name, opname[op]))
+
+
+
+
+
+
+
+
 
 for op in haslocal:
     if not hasattr(Code, opname[op]):
@@ -855,6 +1086,21 @@ for op in hasjrel+hasjabs:
             self.stackchange(stack_effects[op])
             return self.jump(op, address)
         setattr(Code, opname[op], with_name(do_jump, opname[op]))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -982,6 +1228,9 @@ class _se:
     EXEC_STMT = BUILD_CLASS = 3,0
     JUMP_IF_TRUE = JUMP_IF_FALSE = 1,1
 
+if sys.version>="2.5":
+    _se.YIELD_VALUE = 1, 1
+
 stack_effects = [(0,0)]*256
 
 for name in opcode:
@@ -1002,9 +1251,6 @@ for name in opcode:
                 self.stackchange(se); self.emit(op)
 
         setattr(Code, name, with_name(do_op, name))
-
-
-
 
 
 

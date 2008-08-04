@@ -18,6 +18,51 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
+Changes since version 0.3:
+
+* New node types:
+
+  * ``For(iterable, assign, body)`` -- define a "for" loop over `iterable`
+
+  * ``UnpackSequence(nodes)`` -- unpacks a sequence that's ``len(nodes)`` long,
+    and then generates the given nodes.
+
+  * ``LocalAssign(name)`` -- issues a ``STORE_FAST``, ``STORE_DEREF`` or
+    ``STORE_LOCAL`` as appropriate for the given name.
+
+  * ``Function(body, name='<lambda>', args=(), var=None, kw=None, defaults=())``
+    -- creates a nested function from `body` and puts it on the stack.
+
+  * ``If(cond, then_, else_=Pass)`` -- "if" statement analogue
+
+  * ``ListComp(body)`` and ``LCAppend(value)`` -- implement list comprehensions
+
+  * ``YieldStmt(value)`` -- generates a ``YIELD_VALUE`` (plus a ``POP_TOP`` in
+    Python 2.5+)
+
+* ``Code`` objects are now iterable, yielding ``(offset, op, arg)`` triples,
+  where `op` is numeric and `arg` is either numeric or ``None``.
+
+* ``Code`` objects' ``.code()`` method can now take a "parent" ``Code`` object,
+  to link the child code's free variables to cell variables in the parent.
+
+* Added ``Code.from_spec()`` classmethod, that initializes a code object from a
+  name and argument spec.
+
+* ``Code`` objects now have a ``.nested(name, args, var, kw)`` method, that
+  creates a child code object with the same ``co_filename`` and the supplied
+  name/arg spec.
+
+* Fixed incorrect stack tracking for the ``FOR_ITER`` and ``YIELD_VALUE``
+  opcodes
+
+* Ensure that ``CO_GENERATOR`` flag is set if ``YIELD_VALUE`` opcode is used
+
+* Change tests so that Python 2.3's broken line number handling in ``dis.dis``
+  and constant-folding optimizer don't generate spurious failures in this
+  package's test suite.
+
+
 Changes since version 0.2:
 
 * Added ``Suite``, ``TryExcept``, and ``TryFinally`` node types
@@ -85,12 +130,12 @@ fully supported.  Also note the following limitations:
 * Jumps to as-yet-undefined labels cannot span a distance greater than 65,535
   bytes.
 
-* The ``dis()`` module in Python 2.3 has a bug that makes it show incorrect
+* The ``dis()`` function in Python 2.3 has a bug that makes it show incorrect
   line numbers when the difference between two adjacent line numbers is
-  greater than 255.  This causes two shallow failures in the current test
-  suite when it's run under Python 2.3.  (And there are two other expected
-  failures under Python 2.3 due to an automatic optimization.)
-
+  greater than 255.  (To work around this, the test_suite uses a later version
+  of ``dis()``, but do note that it may affect your own tests if you use
+  ``dis()`` with Python 2.3 and use widely separated line numbers.)
+  
 If you find any other issues, please let me know.
 
 Please also keep in mind that this is a work in progress, and the API may
@@ -136,7 +181,7 @@ generated::
 
 As you can see, ``Code`` instances automatically generate a line number table
 that maps each ``set_lineno()`` to the corresponding position in the bytecode.
-
+    
 And of course, the resulting code objects can be run with ``eval()`` or
 ``exec``, or used with ``new.function`` to create a function::
 
@@ -149,6 +194,19 @@ And of course, the resulting code objects can be run with ``eval()`` or
     >>> f = new.function(c.code(), globals())
     >>> f()
     42
+
+Finally, code objects are also iterable, yielding ``(offset, opcode, arg)``
+tuples, where `arg` is ``None`` for opcodes with no arguments, and an integer
+otherwise::
+
+    >>> import peak.util.assembler as op
+    >>> list(c) == [
+    ...     (0, op.LOAD_CONST, 1),
+    ...     (3, op.RETURN_VALUE, None)
+    ... ]
+    True
+
+This can be useful for testing or otherwise inspecting code you've generated.
 
 
 Opcodes and Arguments
@@ -469,7 +527,7 @@ And ``Pass`` is a shortcut for an empty ``Suite``, that generates nothing::
     >>> dis(c.code())
       0           0 LOAD_CONST               0 (None)
                   3 RETURN_VALUE    
-    
+
 
 Local and Global Names
 ----------------------
@@ -484,7 +542,6 @@ global variable, respectively::
     >>> dis(c.code())
       0           0 LOAD_FAST                0 (x)
                   3 LOAD_GLOBAL              0 (y)
-
 
 As with simple constants and ``Const`` wrappers, these objects can be used to
 construct more complex expressions, like ``{a:(b,c)}``::
@@ -501,10 +558,21 @@ construct more complex expressions, like ``{a:(b,c)}``::
                  16 ROT_THREE
                  17 STORE_SUBSCR
 
+The ``LocalAssign`` node type takes a name, and stores a value in a local
+variable::
+
+    >>> from peak.util.assembler import LocalAssign
+    >>> c = Code()
+    >>> c(42, LocalAssign('x'))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               0 (x)
+
 If the code object is not using "fast locals" (i.e. ``CO_OPTIMIZED`` isn't
-set), local variables will be dereferenced using ``LOAD_NAME`` instead of
-``LOAD_FAST``, and if the referenced local name is a "cell" or "free"
-variable, ``LOAD_DEREF`` is used instead::
+set), local variables will be referenced using ``LOAD_NAME`` and ``STORE_NAME``
+instead of ``LOAD_FAST`` and ``STORE_FAST``, and if the referenced local name
+is a "cell" or "free" variable, ``LOAD_DEREF`` and ``STORE_DEREF`` are used
+instead::
 
     >>> from peak.util.assembler import CO_OPTIMIZED
     >>> c = Code()
@@ -512,10 +580,14 @@ variable, ``LOAD_DEREF`` is used instead::
     >>> c.co_cellvars = ('y',)
     >>> c.co_freevars = ('z',)
     >>> c( Local('x'), Local('y'), Local('z') )
+    >>> c( LocalAssign('x'), LocalAssign('y'), LocalAssign('z') )
     >>> dis(c.code())
       0           0 LOAD_NAME                0 (x)
                   3 LOAD_DEREF               0 (y)
                   6 LOAD_DEREF               1 (z)
+                  9 STORE_NAME               0 (x)
+                 12 STORE_DEREF              0 (y)
+                 15 STORE_DEREF              1 (z)
 
 
 Obtaining Attributes
@@ -628,6 +700,57 @@ Both ``Return`` and ``return_()`` can be used with no argument, in which case
                   3 RETURN_VALUE
 
 
+``If`` Conditions
+-----------------
+
+The ``If()`` node type generates conditional code, roughly equivalent to a
+Python if/else statement::
+
+    >>> from peak.util.assembler import If
+    >>> c = Code()
+    >>> c( If(Local('a'), Return(42), Return(55)) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
+                  3 JUMP_IF_FALSE            5 (to 11)
+                  6 POP_TOP
+                  7 LOAD_CONST               1 (42)
+                 10 RETURN_VALUE
+            >>   11 POP_TOP
+                 12 LOAD_CONST               2 (55)
+                 15 RETURN_VALUE
+
+However, it can also be used like a Python 2.5+ conditional expression
+(regardless of the targeted Python version)::
+
+    >>> c = Code()
+    >>> c( Return(If(Local('a'), 42, 55)) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
+                  3 JUMP_IF_FALSE            7 (to 13)
+                  6 POP_TOP
+                  7 LOAD_CONST               1 (42)
+                 10 JUMP_FORWARD             4 (to 17)
+            >>   13 POP_TOP
+                 14 LOAD_CONST               2 (55)
+            >>   17 RETURN_VALUE
+
+
+Note that ``If()`` does *not* do constant-folding on its condition; even if the
+condition is a constant, it will be tested at runtime.  This avoids issues with
+using mutable constants, e.g.::
+
+    >>> c = Code()
+    >>> c(If(Const([]), 42, 55))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ([])
+                  3 JUMP_IF_FALSE            7 (to 13)
+                  6 POP_TOP
+                  7 LOAD_CONST               2 (42)
+                 10 JUMP_FORWARD             4 (to 17)
+            >>   13 POP_TOP
+                 14 LOAD_CONST               3 (55)
+
+
 Labels and Jump Targets
 -----------------------
 
@@ -738,6 +861,42 @@ And a four-way (``a<b>c!=d``)::
             >>   36 ROT_TWO
                  37 POP_TOP
             >>   38 RETURN_VALUE
+
+
+Sequence Unpacking
+------------------
+
+The ``UnpackSequence`` node type takes a sequence of code generation targets,
+and generates an ``UNPACK_SEQUENCE`` of the correct length, followed by the
+targets::
+
+    >>> from peak.util.assembler import UnpackSequence
+    >>> c = Code()  
+    >>> c((1,2), UnpackSequence([LocalAssign('x'), LocalAssign('y')]))
+    >>> dis(c.code())   # x, y = 1, 2
+      0           0 LOAD_CONST               1 (1)
+                  3 LOAD_CONST               2 (2)
+                  6 BUILD_TUPLE              2
+                  9 UNPACK_SEQUENCE          2
+                 12 STORE_FAST               0 (x)
+                 15 STORE_FAST               1 (y)
+
+
+Yield Statements
+----------------
+
+The ``YieldStmt`` node type generates the necessary opcode(s) for a ``yield``
+statement, based on the target Python version.  (In Python 2.5+, a ``POP_TOP``
+must be generated after a ``YIELD_VALUE`` in order to create a yield statement,
+as opposed to a yield expression.)  It also sets the code flags needed to make
+the resulting code object a generator::
+
+    >>> from peak.util.assembler import YieldStmt
+    >>> c = Code()
+    >>> c(YieldStmt(1), YieldStmt(2), Return(None))
+    >>> list(eval(c.code()))
+    [1, 2]
+
 
 
 Constant Detection and Folding
@@ -1194,6 +1353,22 @@ recognize it as an argument unpacking prologue::
     >>> inspect.getargspec(f4)
     (['a', ['b', 'c'], ['d', ['e', 'f']]], None, None, None)
 
+You can also use the ``from_spec(name='<lambda>', args=(), var=None, kw=None)``
+classmethod to explicitly set a name and argument spec for a new code object::
+
+    >>> c = Code.from_spec('a', ('b', ('c','d'), 'e'), 'f', 'g')
+    >>> c.co_name
+    'a'
+
+    >>> c.co_varnames
+    ['b', '.1', 'e', 'f', 'g', 'c', 'd']
+
+    >>> c.co_argcount
+    3
+    
+    >>> inspect.getargs(c.code())
+    (['b', ['c', 'd'], 'e'], 'f', 'g')
+
 
 Code Attributes
 ===============
@@ -1384,15 +1559,15 @@ implementation::
 It works okay if there's no dead code::
 
     >>> c = Code()
-    >>> c( If(23, 42, 55) )
-    >>> dis(c.code())   # Python 2.3 may peephole-optimize this code
-      0           0 LOAD_CONST               1 (23)
+    >>> c( If(Local('a'), 42, 55) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
                   3 JUMP_IF_FALSE            7 (to 13)
                   6 POP_TOP
-                  7 LOAD_CONST               2 (42)
+                  7 LOAD_CONST               1 (42)
                  10 JUMP_FORWARD             4 (to 17)
             >>   13 POP_TOP
-                 14 LOAD_CONST               3 (55)
+                 14 LOAD_CONST               2 (55)
 
 But it breaks if you end the "then" block with a return::
 
@@ -1412,21 +1587,21 @@ What we need is something like this instead::
     ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
     ...     if code.stack_size is not None:
     ...         end_if.JUMP_FORWARD(code)
-    ...     code(else_clause, Code.POP_TOP, else_, end_if)
+    ...     code(else_clause, Code.POP_TOP, else_, end_if)           
     >>> If = nodetype()(If)
 
 As you can see, the dead code is now eliminated::
 
     >>> c = Code()
-    >>> c( If(23, Return(42), 55) )
-    >>> dis(c.code())   # Python 2.3 may peephole-optimize this code
-      0           0 LOAD_CONST               1 (23)
+    >>> c( If(Local('a'), Return(42), 55) )
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (a)
                   3 JUMP_IF_FALSE            5 (to 11)
                   6 POP_TOP
-                  7 LOAD_CONST               2 (42)
+                  7 LOAD_CONST               1 (42)
                  10 RETURN_VALUE
             >>   11 POP_TOP
-                 12 LOAD_CONST               3 (55)
+                 12 LOAD_CONST               2 (55)
 
 
 Blocks, Loops, and Exception Handling
@@ -1763,6 +1938,297 @@ if it's inside some other kind of block within the loop, e.g. a "try" clause::
             >>   19 END_FINALLY
                  20 POP_BLOCK
 
+``for`` Loops
+-------------
+
+There is a ``For()`` node type available for generating simple loops (without
+break/continue support).  It takes an iterable expression, an assignment
+clause, and a loop body::
+
+    >>> from peak.util.assembler import For
+    >>> y = Call(Const(range), (3,))
+    >>> x = LocalAssign('x')
+    >>> body = Suite([Local('x'), Code.PRINT_EXPR])
+
+    >>> c = Code()
+    >>> c(For(y, x, body))  # for x in range(3): print x
+    >>> c.return_()
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ([0, 1, 2])
+                  3 GET_ITER
+            >>    4 FOR_ITER                10 (to 17)
+                  7 STORE_FAST               0 (x)
+                 10 LOAD_FAST                0 (x)
+                 13 PRINT_EXPR
+                 14 JUMP_ABSOLUTE            4
+            >>   17 LOAD_CONST               0 (None)
+                 20 RETURN_VALUE
+
+The arguments are given in execution order: first the "in" value of the loop,
+then the assignment to a loop variable, and finally the body of the loop.  The
+distinction between the assignment and body, however, is only for clarity and
+convenience (to avoid needing to glue the assignment to the body with a
+``Suite``).  If you already have a suite or only need one node for the entire
+loop body, you can do the same thing with only two arguments::
+
+    >>> c = Code()
+    >>> c(For(y, Code.PRINT_EXPR))
+    >>> c.return_()
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 ([0, 1, 2])
+                  3 GET_ITER
+            >>    4 FOR_ITER                 4 (to 11)
+                  7 PRINT_EXPR
+                  8 JUMP_ABSOLUTE            4
+            >>   11 LOAD_CONST               0 (None)
+                 14 RETURN_VALUE
+
+Notice, by the way, that ``For()`` does NOT set up a loop block for you, so if
+you want to be able to use break and continue, you'll need to wrap the loop in
+a labelled SETUP_LOOP/POP_BLOCK pair, as described in the preceding sections.
+
+
+List Comprehensions
+-------------------
+
+In order to generate correct list comprehension code for the target Python
+version, you must use the ``ListComp()`` and ``LCAppend()`` node types.  This
+is because Python versions 2.4 and up store the list being built in a temporary
+variable, and use a special ``LIST_APPEND`` opcode to append values, while 2.3
+stores the list's ``append()`` method in the temporary variable, and calls it
+to append values.
+
+The ``ListComp()`` node wraps a code body (usually a ``For()`` loop) and
+manages the creation and destruction of a temporary variable (e.g. ``_[1]``,
+``_[2]``, etc.).  The ``LCAppend()`` node type wraps a value or expression to
+be appended to the innermost active ``ListComp()`` in progress::
+
+    >>> from peak.util.assembler import ListComp, LCAppend
+    >>> c = Code()
+    >>> simple = ListComp(For(y, x, LCAppend(Local('x'))))
+    >>> c.return_(simple)
+    >>> eval(c.code())
+    [0, 1, 2]
+
+    >>> c = Code()
+    >>> c.return_(ListComp(For(y, x, LCAppend(simple))))
+    >>> eval(c.code())
+    [[0, 1, 2], [0, 1, 2], [0, 1, 2]]
+
+
+Closures and Nested Functions
+=============================
+
+Free and Cell Variables
+-----------------------
+
+To implement closures and nested scopes, your code objects must use "free" or
+"cell" variables in place of regular "fast locals".  A "free" variable is one
+that is defined in an outer scope, and a "cell" variable is one that's defined
+in the current scope, but will also be used by nested functions.
+
+The simplest way to set up free or cell variables is to use a code object's
+``makefree(names)`` and ``makecells(names)`` methods::
+
+    >>> c = Code()
+    >>> c.co_cellvars
+    ()
+    >>> c.co_freevars
+    ()
+
+    >>> c.makefree(['x', 'y'])
+    >>> c.makecells(['z'])
+
+    >>> c.co_cellvars
+    ('z',)
+    >>> c.co_freevars
+    ('x', 'y')
+
+When a name has been defined as a free or cell variable, the ``_DEREF`` opcode
+variants are used to generate ``Local()`` and ``LocalAssign()`` nodes::
+
+    >>> c((Local('x'), Local('y')), LocalAssign('z'))
+    >>> dis(c.code())
+      0           0 LOAD_DEREF               1 (x)
+                  3 LOAD_DEREF               2 (y)
+                  6 BUILD_TUPLE              2
+                  9 STORE_DEREF              0 (z)
+
+If you have already written code in a code object that operates on the relevant
+locals, the code is retroactively patched to use the ``_DEREF`` opcodes::
+
+    >>> c = Code()
+    >>> c((Local('x'), Local('y')), LocalAssign('z'))
+    >>> dis(c.code())
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 BUILD_TUPLE              2
+                  9 STORE_FAST               2 (z)
+
+    >>> c.makefree(['x', 'y'])
+    >>> c.makecells(['z'])
+
+    >>> dis(c.code())
+      0           0 LOAD_DEREF               1 (x)
+                  3 LOAD_DEREF               2 (y)
+                  6 BUILD_TUPLE              2
+                  9 STORE_DEREF              0 (z)
+
+This means that you can defer the decision of which locals are free/cell
+variables until the code is ready to be generated.  In fact, by passing in
+a "parent" code object to the ``.code()`` method, you can get BytecodeAssembler
+to automatically call ``makefree()`` and ``makecells()`` for the correct
+variable names in the child and parent code objects, as we'll see in the next
+section.
+
+
+Nested Code Objects
+-------------------
+
+To create a code object for use in a nested scope, you can use the parent code
+object's ``nested()`` method.  It works just like the ``from_spec()``
+classmethod, except that the ``co_filename`` of the parent is copied to the
+child::
+
+    >>> p = Code()
+    >>> p.co_filename = 'testname'
+
+    >>> c = p.nested('sub', ['a','b'], 'c', 'd')
+
+    >>> c.co_name
+    'sub'
+    
+    >>> c.co_filename
+    'testname'
+
+    >>> inspect.getargs(c.code(p))
+    (['a', 'b'], 'c', 'd')
+
+Notice that you must pass the parent code object to the child's ``.code()``
+method to ensure that free/cell variables are properly set up.  When the
+``code()`` method is given another code object as a parameter, it automatically
+converts any locally-read (but not written) to "free" variables in the child
+code, and ensures that those same variables become "cell" variables in the
+supplied parent code object::
+
+    >>> p.LOAD_CONST(42)
+    >>> p(LocalAssign('a'))
+    >>> dis(p.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               0 (a)
+    
+    >>> c = p.nested()
+    >>> c(Local('a'))
+
+    >>> dis(c.code(p))
+      0           0 LOAD_DEREF               0 (a)
+
+    >>> dis(p.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              0 (a)
+
+Notice that the ``STORE_FAST`` in the parent code object was automatically
+patched to a ``STORE_DEREF``, with an updated offset if applicable.  Any
+future use of ``Local('a')`` or ``LocalAssign('a')`` in the parent or child
+code objects will now refer to the free/cell variable, rather than the "local"
+variable::
+
+    >>> p(Local('a'))
+    >>> dis(p.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              0 (a)
+                  6 LOAD_DEREF               0 (a)
+
+    >>> c(LocalAssign('a'))
+    >>> dis(c.code(p))
+      0           0 LOAD_DEREF               0 (a)
+                  3 STORE_DEREF              0 (a)
+
+
+``Function()``
+--------------
+
+The ``Function(body, name='<lambda>', args=(), var=None, kw=None, defaults=())``
+node type creates a function object from the specified body and the optional
+name, argument specs, and defaults.  The ``Function()`` node generates code to
+create the function object with the appropriate defaults and closure (if
+applicable), and any needed free/cell variables are automatically set up in the
+parent and child code objects.  The newly generated function will be on top of
+the stack at the end of the generated code::
+
+    >>> from peak.util.assembler import Function
+    >>> c = Code()
+    >>> c.co_filename = '<string>'
+    >>> c.return_(Function(Return(Local('a')), 'f', ['a'], defaults=[42]))
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 LOAD_CONST               2 (<... f ..., file "<string>", line -1>)
+                  6 MAKE_FUNCTION            1
+                  9 RETURN_VALUE
+
+Now that we've generated the code for a function returning a function, let's
+run it, to get the function we defined::
+
+    >>> f = eval(c.code())
+    >>> f
+    <function f at ...>
+
+    >>> inspect.getargspec(f)
+    (['a'], None, None, (42,))
+
+    >>> f()
+    42
+
+    >>> f(99)
+    99
+
+Now let's create a doubly nested function, with some extras::
+
+    >>> c = Code()
+    >>> c.co_filename = '<string>'
+    >>> c.return_(
+    ...     Function(Return(Function(Return(Local('a')))),
+    ...     'f', ['a', 'b'], 'c', 'd', [99, 66])
+    ... )
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (99)
+                  3 LOAD_CONST               2 (66)
+                  6 LOAD_CONST               3 (<... f ..., file "<string>", line -1>)
+                  9 MAKE_FUNCTION            2
+                 12 RETURN_VALUE
+
+    >>> f = eval(c.code())
+    >>> f
+    <function f at ...>
+
+    >>> inspect.getargspec(f)
+    (['a', 'b'], 'c', 'd', (99, 66))
+
+    >>> dis(f)
+      0           0 LOAD_CLOSURE             0 (a)
+                  3 BUILD_TUPLE              1
+                  6 LOAD_CONST               1 (<... <lambda> ..., file "<string>", line -1>)
+                  9 MAKE_CLOSURE             0
+                 12 RETURN_VALUE
+
+    >>> dis(f())
+      0           0 LOAD_DEREF               0 (a)
+                  3 RETURN_VALUE    
+
+    >>> f(42)()
+    42
+
+    >>> f()()
+    99
+
+As you can see, ``Function()`` not only takes care of setting up free/cell
+variables in all the relevant scopes, it also chooses whether to use
+``MAKE_FUNCTION`` or ``MAKE_CLOSURE``, and generates code for the defaults.
+
+(Note, by the way, that the `defaults` argument should be a sequence of
+generatable expressions; in the examples here, we used numbers, but they could
+have been arbitrary expression nodes.)
+
 
 ----------------------
 Internals and Doctests
@@ -1785,7 +2251,7 @@ Line number tracking::
     >>> simple_code(1,1).co_stacksize
     1
 
-    >>> dis(simple_code(13,414))    # FAILURE EXPECTED IN PYTHON 2.3
+    >>> dis(simple_code(13,414))
      13           0 LOAD_CONST               0 (None)
     414           3 RETURN_VALUE
 
@@ -1798,7 +2264,7 @@ Line number tracking::
     >>> simple_code(13,14,100).co_stacksize
     100
 
-    >>> dis(simple_code(13,572,120))    # FAILURE EXPECTED IN Python 2.3
+    >>> dis(simple_code(13,572,120))
      13           0 LOAD_CONST               0 (None)
                   3 LOAD_CONST               0 (None)
     ...
@@ -1857,6 +2323,214 @@ Stack underflow detection/recovery, and global/local variable names::
                   3 LOAD_ATTR                1 (bar)
                   6 DELETE_FAST              0 (baz)
 
+Code iteration::
+
+    >>> c.DUP_TOP()
+    >>> c.return_(Code.POP_TOP)
+    >>> list(c) == [
+    ...     (0, op.LOAD_GLOBAL, 0),
+    ...     (3, op.LOAD_ATTR, 1),
+    ...     (6, op.DELETE_FAST, 0),
+    ...     (9, op.DUP_TOP, None),
+    ...     (10, op.POP_TOP, None),
+    ...     (11, op.RETURN_VALUE, None)
+    ... ]
+    True
+
+Code patching::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.STORE_FAST('x')
+    >>> c.LOAD_FAST('x')
+    >>> c.DELETE_FAST('x')
+    >>> c.RETURN_VALUE()
+
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               0 (x)
+                  6 LOAD_FAST                0 (x)
+                  9 DELETE_FAST              0 (x)
+                 12 RETURN_VALUE
+
+
+    >>> c.co_varnames
+    ['x']
+    >>> c.co_varnames.append('y')
+
+    >>> c._patch(
+    ...     {op.LOAD_FAST:  op.LOAD_FAST,
+    ...      op.STORE_FAST: op.STORE_FAST,
+    ...      op.DELETE_FAST: op.DELETE_FAST},
+    ...     {0: 1}
+    ... )
+
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               1 (y)
+                  6 LOAD_FAST                1 (y)
+                  9 DELETE_FAST              1 (y)
+                 12 RETURN_VALUE
+
+    >>> c._patch({op.RETURN_VALUE: op.POP_TOP})
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               1 (y)
+                  6 LOAD_FAST                1 (y)
+                  9 DELETE_FAST              1 (y)
+                 12 POP_TOP
+
+Converting locals to free/cell vars::
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.STORE_FAST('x')
+    >>> c.LOAD_FAST('x')
+
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_FAST               0 (x)
+                  6 LOAD_FAST                0 (x)
+
+    >>> c.co_freevars = 'y', 'x'
+    >>> c.co_cellvars = 'z',
+
+    >>> c._locals_to_cells()
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              2 (x)
+                  6 LOAD_DEREF               2 (x)
+
+    >>> c.DELETE_FAST('x')
+    >>> c._locals_to_cells()
+    Traceback (most recent call last):
+      ...
+    AssertionError: Can't delete local 'x' used in nested scope
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.STORE_FAST('x')
+    >>> c.LOAD_FAST('x')
+
+    >>> c.co_freevars
+    ()
+    >>> c.makefree(['x'])
+    >>> c.co_freevars
+    ('x',)
+
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              0 (x)
+                  6 LOAD_DEREF               0 (x)
+
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.STORE_FAST('x')
+    >>> c.LOAD_FAST('x')
+    >>> c.makecells(['x'])
+    >>> c.co_freevars
+    ()
+    >>> c.co_cellvars
+    ('x',)
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              0 (x)
+                  6 LOAD_DEREF               0 (x)
+    
+    >>> c = Code()
+    >>> c.LOAD_CONST(42)
+    >>> c.STORE_FAST('x')
+    >>> c.LOAD_FAST('x')
+    >>> c.makefree('x')
+    >>> c.makecells(['y'])
+    >>> c.co_freevars
+    ('x',)
+    >>> c.co_cellvars
+    ('y',)
+    >>> dis(c.code())
+      0           0 LOAD_CONST               1 (42)
+                  3 STORE_DEREF              1 (x)
+                  6 LOAD_DEREF               1 (x)
+
+    >>> c = Code()
+    >>> c.co_flags &= ~op.CO_OPTIMIZED
+    >>> c.makecells(['q'])
+    Traceback (most recent call last):
+      ...
+    AssertionError: Can't use cellvars in unoptimized scope
+    
+
+
+Auto-free promotion with code parent:
+
+    >>> p = Code()
+    >>> c = Code()
+    >>> c.LOAD_FAST('x')
+    >>> dis(c.code(p))
+      0           0 LOAD_DEREF               0 (x)
+    >>> p.co_cellvars
+    ('x',)
+
+    >>> p = Code()
+    >>> c = Code.from_function(lambda x,y,z=2: None)
+    >>> c.LOAD_FAST('x')
+    >>> c.LOAD_FAST('y')
+    >>> c.LOAD_FAST('z')
+    
+    >>> dis(c.code(p))
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 LOAD_FAST                2 (z)
+    >>> p.co_cellvars
+    ()
+
+    >>> c.LOAD_FAST('q')
+    >>> dis(c.code(p))
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 LOAD_FAST                2 (z)
+                  9 LOAD_DEREF               0 (q)
+    >>> p.co_cellvars
+    ('q',)
+
+    >>> p = Code()
+    >>> c = Code.from_function(lambda x,*y,**z: None)
+    >>> c.LOAD_FAST('q')
+    >>> c.LOAD_FAST('x')
+    >>> c.LOAD_FAST('y')
+    >>> c.LOAD_FAST('z')
+    >>> dis(c.code(p))
+      0           0 LOAD_DEREF               0 (q)
+                  3 LOAD_FAST                0 (x)
+                  6 LOAD_FAST                1 (y)
+                  9 LOAD_FAST                2 (z)
+    >>> p.co_cellvars
+    ('q',)
+
+    >>> p = Code()
+    >>> c = Code.from_function(lambda x,*y: None)
+    >>> c.LOAD_FAST('x')
+    >>> c.LOAD_FAST('y')
+    >>> c.LOAD_FAST('z')
+    >>> dis(c.code(p))
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 LOAD_DEREF               0 (z)
+    >>> p.co_cellvars
+    ('z',)
+
+    >>> p = Code()
+    >>> c = Code.from_function(lambda x,**y: None)
+    >>> c.LOAD_FAST('x')
+    >>> c.LOAD_FAST('y')
+    >>> c.LOAD_FAST('z')
+    >>> dis(c.code(p))
+      0           0 LOAD_FAST                0 (x)
+                  3 LOAD_FAST                1 (y)
+                  6 LOAD_DEREF               0 (z)
+    >>> p.co_cellvars
+    ('z',)
+
 
 Stack tracking on jumps::
 
@@ -1891,10 +2565,38 @@ Stack tracking on jumps::
       ...
     AssertionError: Stack level mismatch: actual=1 expected=0
 
+    >>> from peak.util.assembler import For
+    >>> c = Code()
+    >>> c(For((), Code.POP_TOP, Pass))
+    >>> c.return_()
+    >>> dis(c.code())
+      0           0 BUILD_TUPLE              0
+                  3 GET_ITER
+            >>    4 FOR_ITER                 4 (to 11)
+                  7 POP_TOP
+                  8 JUMP_ABSOLUTE            4
+            >>   11 LOAD_CONST               0 (None)
+                 14 RETURN_VALUE
+
+    >>> c.stack_history
+    [0, 1, 1, 1, 1, 2, 2, 2, 1, None, None, 0, 1, 1, 1]
 
 
+Yield value::
 
+    >>> import sys
+    >>> from peak.util.assembler import CO_GENERATOR
+    >>> c = Code()
+    >>> c.co_flags & CO_GENERATOR
+    0
+    >>> c(42, Code.YIELD_VALUE)
+    >>> c.stack_size == int(sys.version>='2.5')
+    True
+    >>> (c.co_flags & CO_GENERATOR) == CO_GENERATOR
+    True
 
+    
+    
 Sequence operators and stack tracking:
 
 
@@ -2274,7 +2976,5 @@ TODO
 * Test code flags generation/cloning
 
 * Exhaustive tests of all opcodes' stack history effects
-
-* YIELD_EXPR should set CO_GENERATOR; stack effects depend on Python version
 
 * Test wide jumps and wide argument generation in general
