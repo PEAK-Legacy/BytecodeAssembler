@@ -1,14 +1,12 @@
 #!/usr/bin/env python
-
 """Distutils setup file"""
-
 import ez_setup
 ez_setup.use_setuptools()
 from setuptools import setup
 
 # Metadata
 PACKAGE_NAME = "BytecodeAssembler"
-PACKAGE_VERSION = "0.4"
+PACKAGE_VERSION = "0.5"
 PACKAGES = ['peak', 'peak.util']
 
 def get_description():
@@ -32,13 +30,11 @@ setup(
     description='Generate Python code objects by "assembling" bytecode'
         ' (Now includes a functional/AST-oriented API, too!)',
     long_description = get_description(),
-
     author="Phillip J. Eby",
     author_email="peak@eby-sarna.com",
     license="PSF or ZPL",
     install_requires = ['DecoratorTools>=1.2', 'SymbolType>=1.0'],
     test_suite = 'test_assembler',
-
     packages = PACKAGES,
     namespace_packages = PACKAGES,
 )
