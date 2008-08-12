@@ -645,13 +645,13 @@ class Code(object):
         self.emit_arg(MAKE_FUNCTION, ndefaults)
 
     def MAKE_CLOSURE(self, ndefaults, freevars):
+        if sys.version>='2.5':
+            freevars = 1
         self.stackchange((1+freevars+ndefaults,1))
         self.emit_arg(MAKE_CLOSURE, ndefaults)
 
     def here(self):
         return len(self.co_code)
-
-
 
 
     def set_stack_size(self, size):

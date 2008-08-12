@@ -18,6 +18,10 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
+Changes since version 0.5:
+
+* Fix incorrect stack size calculation for ``MAKE_CLOSURE`` on Python 2.5+
+
 Changes since version 0.3:
 
 * New node types:
@@ -353,10 +357,16 @@ current stack size, for purposes of computing the required total stack size::
     >>> c = Code()
     >>> c.co_cellvars = ('a','b')
 
+    >>> import sys
     >>> c.LOAD_CLOSURE('a')
     >>> c.LOAD_CLOSURE('b')
-    >>> c.LOAD_CONST(None)  # in real code, this'd be a Python code constant
-    >>> c.MAKE_CLOSURE(0,2) # no defaults, 2 free vars in the new function
+    >>> if sys.version>='2.5':
+    ...     c.BUILD_TUPLE(2) # In Python 2.5+, free vars must be in a tuple
+    >>> c.LOAD_CONST(None)   # in real code, this'd be a Python code constant
+    >>> c.MAKE_CLOSURE(0,2)  # no defaults, 2 free vars in the new function
+
+    >>> c.stack_size         # This will be 1, no matter what Python version
+    1
 
 The ``COMPARE_OP`` method takes an argument which can be a valid comparison
 integer constant, or a string containing a Python operator, e.g.::
@@ -2752,19 +2762,24 @@ Stack levels for MAKE_FUNCTION/MAKE_CLOSURE::
       ...
     AssertionError: Stack underflow
 
-    >>> c.LOAD_CONST(1)
-    >>> c.LOAD_CONST(2) # simulate being a function
-    >>> c.MAKE_CLOSURE(1, 0)
+    >>> c = Code()
+    >>> c.LOAD_CONST(1) # closure
+    >>> if sys.version>='2.5': c.BUILD_TUPLE(1)
+    >>> c.LOAD_CONST(2) # default
+    >>> c.LOAD_CONST(3) # simulate being a function
+    >>> c.MAKE_CLOSURE(1, 1)
     >>> c.stack_size
     1
 
     >>> c = Code()
     >>> c.LOAD_CONST(1)
     >>> c.LOAD_CONST(2)
+    >>> if sys.version>='2.5': c.BUILD_TUPLE(2)
     >>> c.LOAD_CONST(3) # simulate being a function
-    >>> c.MAKE_CLOSURE(1, 1)
+    >>> c.MAKE_CLOSURE(0, 2)
     >>> c.stack_size
     1
+
 
 
 Labels and backpatching forward references::
