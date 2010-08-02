@@ -18,6 +18,11 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
+Changes since version 0.5.2:
+
+* Symbolic disassembly with full emulation of backward-compatible JUMP_IF_TRUE
+  and JUMP_IF_FALSE opcodes on Python 2.7 -- tests now run clean on Python 2.7.
+
 
 Changes since version 0.5.1:
 
