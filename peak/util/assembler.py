@@ -1228,6 +1228,88 @@ def fold_args(f, *args):
 
 
 
+def iter_code(codestring):
+    """Iterate over a code string, yielding (start,op,arg,jump,end) tuples
+
+    `start` is the position of the operation start, `end` is the position of
+    the next operation start.  `jump` is a jump target or ``None`` if `op`
+    isn't a jump.  `op` is the opcode, and `arg` the argument, with 32-bit
+    ``EXTENDED_ARG`` instructions pre-processed.
+    """
+    start = ptr = 0
+    size = len(codestring)
+    extend = 0
+    while ptr < size:
+        op = ord(codestring[ptr])
+        ptr += 1
+        if op>=HAVE_ARGUMENT:
+            arg = ord(codestring[ptr]) + ord(codestring[ptr+1])*256 + extend
+            extended_arg = 0
+            ptr += 2
+            if op == EXTENDED_ARG:
+                extend = arg*65536L
+                continue
+            if op in hasjrel or op in hasjabs:
+                jump = arg+ptr*(op in hasjrel)
+            else:
+                jump = None
+        else:
+            arg = label = jump = None
+        yield start, op, arg, jump, ptr
+        start = ptr
+  
+argtype = {}
+for name, group in dict(
+    co_consts = hasconst, 
+    co_names = hasname,
+    co_varnames = haslocal,
+    free = hasfree,
+    cmp_ops = hascompare,
+).items():
+    for op in group:
+        argtype[op] = name
+
+def dump(code):
+    """Disassemble code in a symbolic manner, i.e., without offsets"""
+    if hasattr(code, 'im_func'): code = code.im_func
+    if hasattr(code, 'func_code'): code = code.func_code
+
+    co_names = code.co_names
+    co_consts = [repr(x) for x in code.co_consts]
+    co_varnames = code.co_varnames
+    cmp_ops = cmp_op
+    free = code.co_cellvars + code.co_freevars
+
+    labels = {}
+    instructions = list(iter_code(code.co_code))
+    lbl = [jump for start, op, arg, jump, end in instructions if jump is not None]
+    lbl.sort()
+    for jump in lbl:
+        labels.setdefault(jump, "L%d:" % (len(labels)+1))
+
+    for start, op, arg, jump, end in instructions:
+        print '       ', labels.get(start, '').ljust(7),
+        print opname[op].ljust(15),
+        if jump is not None:
+            print labels[jump][:-1].rjust(10),
+        elif arg is not None:
+            print repr(arg).rjust(10), 
+            if op in argtype:
+                print '(%s)' % (locals()[argtype[op]][arg]),
+        print 
+
+
+
+
+
+
+
+
+
+
+
+
+
 class _se:
     """Quick way of defining static stack effects of opcodes"""
     POP_TOP   = END_FINALLY = POP_JUMP_IF_FALSE = POP_JUMP_IF_TRUE = 1,0

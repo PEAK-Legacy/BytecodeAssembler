@@ -224,6 +224,46 @@ otherwise::
 This can be useful for testing or otherwise inspecting code you've generated.
 
 
+Symbolic Disassembler
+=====================
+
+Python's built-in disassembler can be verbose and hard to read when inspecting
+complex generated code -- usually you don't care about bytecode offsets or
+line numbers as much as you care about labels, for example.
+
+So, BytecodeAssembler provides its own, simplified disassembler, which we'll
+be using for more complex listings in this manual::
+
+    >>> from peak.util.assembler import dump  
+
+Some sample output, that also showcases some of BytecodeAssembler's
+`High-Level Code Generation`_ features::
+
+    >>> c = Code()
+    >>> from peak.util.assembler import Compare, Local
+    >>> c.return_(Compare(Local('a'), [('<', Local('b')), ('<', Local('c'))]))
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    LOAD_FAST                1 (b)
+                    DUP_TOP
+                    ROT_THREE
+                    COMPARE_OP               0 (<)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_FAST                2 (c)
+                    COMPARE_OP               0 (<)
+                    JUMP_FORWARD            L2
+            L1:     ROT_TWO
+                    POP_TOP
+            L2:     RETURN_VALUE
+
+As you can see, the line numbers and bytecode offsets have been dropped,
+making it esier to see where the jumps go.  (This also makes doctests more
+robust against Python version changes, as ``dump()`` has some extra code to
+make conditional jumps appear consistent across the major changes that were
+made to conditional jump instructions between Python 2.6 and 2.7.)
+
+
 Opcodes and Arguments
 =====================
 
@@ -316,11 +356,11 @@ method::
     >>> c.POP_TOP()
     >>> c.JUMP_ABSOLUTE(where)   # now jump back to it
 
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (42)
-            >>    3 DUP_TOP
-                  4 POP_TOP
-                  5 JUMP_ABSOLUTE            3
+    >>> dump(c.code())
+                    LOAD_CONST               1 (42)
+            L1:     DUP_TOP
+                    POP_TOP
+                    JUMP_ABSOLUTE            L1
 
 But if you are jumping *forward*, you will need to call the jump or setup
 method without any arguments.  The return value will be a "forward reference"
@@ -338,13 +378,13 @@ been reached::
     >>> c.LOAD_CONST(23)
     >>> c.RETURN_VALUE()
 
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (99)
-                  3 JUMP_IF_TRUE             4 (to 10)
-                  6 LOAD_CONST               2 (42)
-                  9 POP_TOP
-            >>   10 LOAD_CONST               3 (23)
-                 13 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_CONST               1 (99)
+                    JUMP_IF_TRUE             L1
+                    LOAD_CONST               2 (42)
+                    POP_TOP
+            L1:     LOAD_CONST               3 (23)
+                    RETURN_VALUE
 
     >>> eval(c.code())
     23
@@ -730,30 +770,30 @@ Python if/else statement::
     >>> from peak.util.assembler import If
     >>> c = Code()
     >>> c( If(Local('a'), Return(42), Return(55)) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 JUMP_IF_FALSE            5 (to 11)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (42)
-                 10 RETURN_VALUE
-            >>   11 POP_TOP
-                 12 LOAD_CONST               2 (55)
-                 15 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    JUMP_IF_FALSE            L1
+                    POP_TOP
+                    LOAD_CONST               1 (42)
+                    RETURN_VALUE
+            L1:     POP_TOP
+                    LOAD_CONST               2 (55)
+                    RETURN_VALUE
 
 However, it can also be used like a Python 2.5+ conditional expression
 (regardless of the targeted Python version)::
 
     >>> c = Code()
     >>> c( Return(If(Local('a'), 42, 55)) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 JUMP_IF_FALSE            7 (to 13)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (42)
-                 10 JUMP_FORWARD             4 (to 17)
-            >>   13 POP_TOP
-                 14 LOAD_CONST               2 (55)
-            >>   17 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    JUMP_IF_FALSE            L1
+                    POP_TOP
+                    LOAD_CONST               1 (42)
+                    JUMP_FORWARD             L2
+            L1:     POP_TOP
+                    LOAD_CONST               2 (55)
+            L2:     RETURN_VALUE
 
 
 Note that ``If()`` does *not* do constant-folding on its condition; even if the
@@ -762,14 +802,14 @@ using mutable constants, e.g.::
 
     >>> c = Code()
     >>> c(If(Const([]), 42, 55))
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 ([])
-                  3 JUMP_IF_FALSE            7 (to 13)
-                  6 POP_TOP
-                  7 LOAD_CONST               2 (42)
-                 10 JUMP_FORWARD             4 (to 17)
-            >>   13 POP_TOP
-                 14 LOAD_CONST               3 (55)
+    >>> dump(c.code())
+                    LOAD_CONST               1 ([])
+                    JUMP_IF_FALSE            L1
+                    POP_TOP
+                    LOAD_CONST               2 (42)
+                    JUMP_FORWARD             L2
+            L1:     POP_TOP
+                    LOAD_CONST               3 (55)
 
 
 Labels and Jump Targets
@@ -783,13 +823,13 @@ current location.  For example::
     >>> c.LOAD_CONST(99)
     >>> forward = c.JUMP_IF_FALSE()
     >>> c( 1, Code.POP_TOP, forward, Return(3) )
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (99)
-                  3 JUMP_IF_FALSE            4 (to 10)
-                  6 LOAD_CONST               2 (1)
-                  9 POP_TOP
-            >>   10 LOAD_CONST               3 (3)
-                 13 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_CONST               1 (99)
+                    JUMP_IF_FALSE            L1
+                    LOAD_CONST               2 (1)
+                    POP_TOP
+            L1:     LOAD_CONST               3 (3)
+                    RETURN_VALUE
 
 However, there's an easier way to do the same thing, using ``Label`` objects::
 
@@ -798,13 +838,13 @@ However, there's an easier way to do the same thing, using ``Label`` objects::
     >>> skip = Label()
 
     >>> c(99, skip.JUMP_IF_FALSE, 1, Code.POP_TOP, skip, Return(3))
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (99)
-                  3 JUMP_IF_FALSE            4 (to 10)
-                  6 LOAD_CONST               2 (1)
-                  9 POP_TOP
-            >>   10 LOAD_CONST               3 (3)
-                 13 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_CONST               1 (99)
+                    JUMP_IF_FALSE            L1
+                    LOAD_CONST               2 (1)
+                    POP_TOP
+            L1:     LOAD_CONST               3 (3)
+                    RETURN_VALUE
 
 This approach has the advantage of being easy to use in complex trees.
 ``Label`` objects have attributes corresponding to every opcode that uses a
@@ -839,20 +879,20 @@ comparison (``a<b<c``)::
 
     >>> c = Code()
     >>> c.return_(Compare(Local('a'), [('<', Local('b')), ('<', Local('c'))]))
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 LOAD_FAST                1 (b)
-                  6 DUP_TOP
-                  7 ROT_THREE
-                  8 COMPARE_OP               0 (<)
-                 11 JUMP_IF_FALSE           10 (to 24)
-                 14 POP_TOP
-                 15 LOAD_FAST                2 (c)
-                 18 COMPARE_OP               0 (<)
-                 21 JUMP_FORWARD             2 (to 26)
-            >>   24 ROT_TWO
-                 25 POP_TOP
-            >>   26 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    LOAD_FAST                1 (b)
+                    DUP_TOP
+                    ROT_THREE
+                    COMPARE_OP               0 (<)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_FAST                2 (c)
+                    COMPARE_OP               0 (<)
+                    JUMP_FORWARD            L2
+            L1:     ROT_TWO
+                    POP_TOP
+            L2:     RETURN_VALUE
 
 And a four-way (``a<b>c!=d``)::
 
@@ -862,26 +902,26 @@ And a four-way (``a<b>c!=d``)::
     ...         ('<', Local('b')), ('>', Local('c')), ('!=', Local('d'))
     ...     ])
     ... )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 LOAD_FAST                1 (b)
-                  6 DUP_TOP
-                  7 ROT_THREE
-                  8 COMPARE_OP               0 (<)
-                 11 JUMP_IF_FALSE           22 (to 36)
-                 14 POP_TOP
-                 15 LOAD_FAST                2 (c)
-                 18 DUP_TOP
-                 19 ROT_THREE
-                 20 COMPARE_OP               4 (>)
-                 23 JUMP_IF_FALSE           10 (to 36)
-                 26 POP_TOP
-                 27 LOAD_FAST                3 (d)
-                 30 COMPARE_OP               3 (!=)
-                 33 JUMP_FORWARD             2 (to 38)
-            >>   36 ROT_TWO
-                 37 POP_TOP
-            >>   38 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    LOAD_FAST                1 (b)
+                    DUP_TOP
+                    ROT_THREE
+                    COMPARE_OP               0 (<)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_FAST                2 (c)
+                    DUP_TOP
+                    ROT_THREE
+                    COMPARE_OP               4 (>)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_FAST                3 (d)
+                    COMPARE_OP               3 (!=)
+                    JUMP_FORWARD            L2
+            L1:     ROT_TWO
+                    POP_TOP
+            L2:     RETURN_VALUE
 
 
 Sequence Unpacking
@@ -1045,21 +1085,21 @@ types::
 
     >>> c = Code()
     >>> c.return_( And([Local('x'), Local('y')]) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (x)
-                  3 JUMP_IF_FALSE            4 (to 10)
-                  6 POP_TOP
-                  7 LOAD_FAST                1 (y)
-            >>   10 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (x)
+                    JUMP_IF_FALSE           L1        
+                    POP_TOP
+                    LOAD_FAST                1 (y)
+            L1:     RETURN_VALUE
 
     >>> c = Code()
     >>> c.return_( Or([Local('x'), Local('y')]) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (x)
-                  3 JUMP_IF_TRUE             4 (to 10)
-                  6 POP_TOP
-                  7 LOAD_FAST                1 (y)
-            >>   10 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (x)
+                    JUMP_IF_TRUE            L1
+                    POP_TOP
+                    LOAD_FAST                1 (y)
+            L1:     RETURN_VALUE
 
 
 True or false constants are folded automatically, avoiding code generation
@@ -1073,12 +1113,12 @@ for intermediate values that will never be used in the result::
 
     >>> c = Code()
     >>> c.return_( And([1, 2, Local('y'), 0]) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (y)
-                  3 JUMP_IF_FALSE            4 (to 10)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (0)
-            >>   10 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (y)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_CONST               1 (0)
+            L1:     RETURN_VALUE
 
     >>> c = Code()
     >>> c.return_( Or([1, 2, Local('y')]) )
@@ -1088,12 +1128,12 @@ for intermediate values that will never be used in the result::
 
     >>> c = Code()
     >>> c.return_( Or([False, Local('y'), 3]) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (y)
-                  3 JUMP_IF_TRUE             4 (to 10)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (3)
-            >>   10 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (y)
+                    JUMP_IF_TRUE            L1
+                    POP_TOP
+                    LOAD_CONST               1 (3)
+            L1:     RETURN_VALUE
 
 
 Custom Code Generation
@@ -1167,15 +1207,15 @@ But to keep the examples here working with doctest, we'll be doing our
 
     >>> c = Code()
     >>> c( TryFinally(ExprStmt(1), ExprStmt(2)) )
-    >>> dis(c.code())
-      0           0 SETUP_FINALLY            8 (to 11)
-                  3 LOAD_CONST               1 (1)
-                  6 POP_TOP
-                  7 POP_BLOCK
-                  8 LOAD_CONST               0 (None)
-            >>   11 LOAD_CONST               2 (2)
-                 14 POP_TOP
-                 15 END_FINALLY
+    >>> dump(c.code())
+                    SETUP_FINALLY           L1
+                    LOAD_CONST               1 (1)
+                    POP_TOP
+                    POP_BLOCK
+                    LOAD_CONST               0 (None)
+            L1:     LOAD_CONST               2 (2)
+                    POP_TOP
+                    END_FINALLY
 
 The ``nodetype()`` decorator is virtually identical to the ``struct()``
 decorator in the DecoratorTools package, except that it does not support
@@ -1262,12 +1302,12 @@ prove which way a branch will go::
 
     >>> c = Code()
     >>> c.return_( And([Local('x'), False, 27]) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (x)
-                  3 JUMP_IF_FALSE            4 (to 10)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (False)
-            >>   10 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (x)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_CONST               1 (False)
+            L1:     RETURN_VALUE
 
 The above example only folds constants at code generation time, however.  You
 can also do constant folding at AST construction time, using the
@@ -1581,14 +1621,14 @@ It works okay if there's no dead code::
 
     >>> c = Code()
     >>> c( If(Local('a'), 42, 55) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 JUMP_IF_FALSE            7 (to 13)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (42)
-                 10 JUMP_FORWARD             4 (to 17)
-            >>   13 POP_TOP
-                 14 LOAD_CONST               2 (55)
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_CONST               1 (42)
+                    JUMP_FORWARD            L2
+            L1:     POP_TOP
+                    LOAD_CONST               2 (55)
 
 But it breaks if you end the "then" block with a return::
 
@@ -1615,14 +1655,14 @@ As you can see, the dead code is now eliminated::
 
     >>> c = Code()
     >>> c( If(Local('a'), Return(42), 55) )
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (a)
-                  3 JUMP_IF_FALSE            5 (to 11)
-                  6 POP_TOP
-                  7 LOAD_CONST               1 (42)
-                 10 RETURN_VALUE
-            >>   11 POP_TOP
-                 12 LOAD_CONST               2 (55)
+    >>> dump(c.code())
+                    LOAD_FAST                0 (a)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_CONST               1 (42)
+                    RETURN_VALUE
+            L1:     POP_TOP
+                    LOAD_CONST               2 (55)
 
 
 Blocks, Loops, and Exception Handling
@@ -1708,15 +1748,15 @@ reached::
     >>> c.POP_TOP()
     >>> else_()
     >>> c.return_()
-    >>> dis(c.code())
-      0           0 SETUP_EXCEPT             4 (to 7)
-                  3 POP_BLOCK
-                  4 JUMP_FORWARD             3 (to 10)
-            >>    7 POP_TOP
-                  8 POP_TOP
-                  9 POP_TOP
-            >>   10 LOAD_CONST               0 (None)
-                 13 RETURN_VALUE
+    >>> dump(c.code())
+                    SETUP_EXCEPT            L1
+                    POP_BLOCK
+                    JUMP_FORWARD            L2
+            L1:     POP_TOP
+                    POP_TOP
+                    POP_TOP
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
 In the example above, an empty block executes with an exception handler that
 begins at offset 7.  When the block is done, it jumps forward to the end of
@@ -1737,15 +1777,15 @@ like this::
     ...     Return()
     ... )
 
-    >>> dis(c.code())
-      0           0 SETUP_EXCEPT             4 (to 7)
-                  3 POP_BLOCK
-                  4 JUMP_FORWARD             3 (to 10)
-            >>    7 POP_TOP
-                  8 POP_TOP
-                  9 POP_TOP
-            >>   10 LOAD_CONST               0 (None)
-                 13 RETURN_VALUE
+    >>> dump(c.code())
+                    SETUP_EXCEPT             L1
+                    POP_BLOCK
+                    JUMP_FORWARD             L2
+            L1:     POP_TOP
+                    POP_TOP
+                    POP_TOP
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
 (Labels have a ``POP_BLOCK`` attribute that you can pass in when generating
 code.)
@@ -1764,38 +1804,38 @@ and an optional "else" clause::
     ...     )
     ... )
 
-    >>> dis(c.code())
-      0           0 SETUP_EXCEPT             8 (to 11)
-                  3 LOAD_CONST               1 (1)
-                  6 RETURN_VALUE
-                  7 POP_BLOCK
-                  8 JUMP_FORWARD            43 (to 54)
-            >>   11 DUP_TOP
-                 12 LOAD_CONST               2 (<...exceptions.KeyError...>)
-                 15 COMPARE_OP              10 (exception match)
-                 18 JUMP_IF_FALSE           10 (to 31)
-                 21 POP_TOP
-                 22 POP_TOP
-                 23 POP_TOP
-                 24 POP_TOP
-                 25 LOAD_CONST               3 (2)
-                 28 JUMP_FORWARD            27 (to 58)
-            >>   31 POP_TOP
-                 32 DUP_TOP
-                 33 LOAD_CONST               4 (<...exceptions.TypeError...>)
-                 36 COMPARE_OP              10 (exception match)
-                 39 JUMP_IF_FALSE           10 (to 52)
-                 42 POP_TOP
-                 43 POP_TOP
-                 44 POP_TOP
-                 45 POP_TOP
-                 46 LOAD_CONST               5 (3)
-                 49 JUMP_FORWARD             6 (to 58)
-            >>   52 POP_TOP
-                 53 END_FINALLY
-            >>   54 LOAD_CONST               6 (4)
-                 57 RETURN_VALUE
-            >>   58 RETURN_VALUE
+    >>> dump(c.code())
+                    SETUP_EXCEPT            L1
+                    LOAD_CONST               1 (1)
+                    RETURN_VALUE
+                    POP_BLOCK
+                    JUMP_FORWARD            L4
+            L1:     DUP_TOP
+                    LOAD_CONST               2 (<...exceptions.KeyError...>)
+                    COMPARE_OP              10 (exception match)
+                    JUMP_IF_FALSE           L2
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    LOAD_CONST               3 (2)
+                    JUMP_FORWARD            L5
+            L2:     POP_TOP
+                    DUP_TOP
+                    LOAD_CONST               4 (<...exceptions.TypeError...>)
+                    COMPARE_OP              10 (exception match)
+                    JUMP_IF_FALSE           L3
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    LOAD_CONST               5 (3)
+                    JUMP_FORWARD            L5
+            L3:     POP_TOP
+                    END_FINALLY
+            L4:     LOAD_CONST               6 (4)
+                    RETURN_VALUE
+            L5:     RETURN_VALUE
 
 
 Try/Finally Blocks
@@ -1815,11 +1855,11 @@ normal pattern for producing a try/finally construct is as follows::
 
 And it produces code that looks like this::
 
-    >>> dis(c.code())
-      0           0 SETUP_FINALLY            4 (to 7)
-                  3 POP_BLOCK
-                  4 LOAD_CONST               0 (None)
-            >>    7 END_FINALLY
+    >>> dump(c.code())
+                    SETUP_FINALLY           L1
+                    POP_BLOCK
+                    LOAD_CONST               0 (None)
+            L1:     END_FINALLY
 
 The ``END_FINALLY`` opcode will remove 1, 2, or 3 values from the stack at
 runtime, depending on how the "try" block was exited.  In the case of simply
@@ -1838,15 +1878,15 @@ try/finally blocks::
     >>> from peak.util.assembler import TryFinally
     >>> c = Code()
     >>> c( TryFinally(ExprStmt(1), ExprStmt(2)) )
-    >>> dis(c.code())
-      0           0 SETUP_FINALLY            8 (to 11)
-                  3 LOAD_CONST               1 (1)
-                  6 POP_TOP
-                  7 POP_BLOCK
-                  8 LOAD_CONST               0 (None)
-            >>   11 LOAD_CONST               2 (2)
-                 14 POP_TOP
-                 15 END_FINALLY
+    >>> dump(c.code())
+                    SETUP_FINALLY           L1
+                    LOAD_CONST               1 (1)
+                    POP_TOP
+                    POP_BLOCK
+                    LOAD_CONST               0 (None)
+            L1:     LOAD_CONST               2 (2)
+                    POP_TOP
+                    END_FINALLY
 
 
 Loops
@@ -1881,19 +1921,19 @@ block, one that's looped back to, and one that marks the "else" clause::
     ...     Return()
     ... )
 
-    >>> dis(c.code())
-      0           0 SETUP_LOOP              19 (to 22)
-                  3 LOAD_CONST               1 (5)
-            >>    6 JUMP_IF_FALSE            7 (to 16)
-                  9 LOAD_CONST               2 (1)
-                 12 BINARY_SUBTRACT
-                 13 JUMP_ABSOLUTE            6
-            >>   16 POP_TOP
-                 17 POP_BLOCK
-                 18 LOAD_CONST               3 (42)
-                 21 RETURN_VALUE
-            >>   22 LOAD_CONST               0 (None)
-                 25 RETURN_VALUE
+    >>> dump(c.code())
+                    SETUP_LOOP              L3
+                    LOAD_CONST               1 (5)
+            L1:     JUMP_IF_FALSE           L2
+                    LOAD_CONST               2 (1)
+                    BINARY_SUBTRACT
+                    JUMP_ABSOLUTE           L1
+            L2:     POP_TOP
+                    POP_BLOCK
+                    LOAD_CONST               3 (42)
+                    RETURN_VALUE
+            L3:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
     >>> eval(c.code())
     42
@@ -1926,13 +1966,13 @@ it occurs directly inside a loop block::
     >>> fwd()
     >>> c.BREAK_LOOP()
     >>> c.POP_BLOCK()()
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (57)
-                  3 SETUP_LOOP               8 (to 14)
-                  6 JUMP_IF_TRUE             3 (to 12)
-            >>    9 JUMP_ABSOLUTE            9
-            >>   12 BREAK_LOOP
-                 13 POP_BLOCK
+    >>> dump(c.code())
+                    LOAD_CONST               1 (57)
+                    SETUP_LOOP              L3
+                    JUMP_IF_TRUE            L2
+            L1:     JUMP_ABSOLUTE           L1
+            L2:     BREAK_LOOP
+                    POP_BLOCK
 
 In other words, ``CONTINUE_LOOP`` only really emits a ``CONTINUE_LOOP`` opcode
 if it's inside some other kind of block within the loop, e.g. a "try" clause::
@@ -1948,16 +1988,16 @@ if it's inside some other kind of block within the loop, e.g. a "try" clause::
     >>> c.POP_BLOCK()
     >>> c.END_FINALLY()
     >>> c.POP_BLOCK()()
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (57)
-                  3 SETUP_LOOP              15 (to 21)
-            >>    6 SETUP_FINALLY           10 (to 19)
-                  9 JUMP_IF_TRUE             3 (to 15)
-                 12 CONTINUE_LOOP            6
-            >>   15 POP_BLOCK
-                 16 LOAD_CONST               0 (None)
-            >>   19 END_FINALLY
-                 20 POP_BLOCK
+    >>> dump(c.code())
+                    LOAD_CONST               1 (57)
+                    SETUP_LOOP              L4
+            L1:     SETUP_FINALLY           L3
+                    JUMP_IF_TRUE            L2
+                    CONTINUE_LOOP           L1
+            L2:     POP_BLOCK
+                    LOAD_CONST               0 (None)
+            L3:     END_FINALLY
+                    POP_BLOCK
 
 ``for`` Loops
 -------------
@@ -1974,16 +2014,16 @@ clause, and a loop body::
     >>> c = Code()
     >>> c(For(y, x, body))  # for x in range(3): print x
     >>> c.return_()
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 ([0, 1, 2])
-                  3 GET_ITER
-            >>    4 FOR_ITER                10 (to 17)
-                  7 STORE_FAST               0 (x)
-                 10 LOAD_FAST                0 (x)
-                 13 PRINT_EXPR
-                 14 JUMP_ABSOLUTE            4
-            >>   17 LOAD_CONST               0 (None)
-                 20 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_CONST               1 ([0, 1, 2])
+                    GET_ITER
+            L1:     FOR_ITER                L2
+                    STORE_FAST               0 (x)
+                    LOAD_FAST                0 (x)
+                    PRINT_EXPR
+                    JUMP_ABSOLUTE           L1
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
 The arguments are given in execution order: first the "in" value of the loop,
 then the assignment to a loop variable, and finally the body of the loop.  The
@@ -1995,14 +2035,14 @@ loop body, you can do the same thing with only two arguments::
     >>> c = Code()
     >>> c(For(y, Code.PRINT_EXPR))
     >>> c.return_()
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 ([0, 1, 2])
-                  3 GET_ITER
-            >>    4 FOR_ITER                 4 (to 11)
-                  7 PRINT_EXPR
-                  8 JUMP_ABSOLUTE            4
-            >>   11 LOAD_CONST               0 (None)
-                 14 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_CONST               1 ([0, 1, 2])
+                    GET_ITER
+            L1:     FOR_ITER                L2
+                    PRINT_EXPR
+                    JUMP_ABSOLUTE           L1
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
 Notice, by the way, that ``For()`` does NOT set up a loop block for you, so if
 you want to be able to use break and continue, you'll need to wrap the loop in
@@ -2559,12 +2599,12 @@ Stack tracking on jumps::
     >>> end = Label()
     >>> c(99, else_.JUMP_IF_TRUE, Code.POP_TOP, end.JUMP_FORWARD)
     >>> c(else_, Code.POP_TOP, end)
-    >>> dis(c.code())
-      0           0 LOAD_CONST               1 (99)
-                  3 JUMP_IF_TRUE             4 (to 10)
-                  6 POP_TOP
-                  7 JUMP_FORWARD             1 (to 11)
-            >>   10 POP_TOP
+    >>> dump(c.code())
+                    LOAD_CONST               1 (99)
+                    JUMP_IF_TRUE            L1
+                    POP_TOP
+                    JUMP_FORWARD            L2
+            L1:     POP_TOP
 
     >>> c.stack_size
     0
@@ -2589,14 +2629,14 @@ Stack tracking on jumps::
     >>> c = Code()
     >>> c(For((), Code.POP_TOP, Pass))
     >>> c.return_()
-    >>> dis(c.code())
-      0           0 BUILD_TUPLE              0
-                  3 GET_ITER
-            >>    4 FOR_ITER                 4 (to 11)
-                  7 POP_TOP
-                  8 JUMP_ABSOLUTE            4
-            >>   11 LOAD_CONST               0 (None)
-                 14 RETURN_VALUE
+    >>> dump(c.code())
+                    BUILD_TUPLE              0
+                    GET_ITER
+            L1:     FOR_ITER                L2
+                    POP_TOP
+                    JUMP_ABSOLUTE           L1
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
     >>> c.stack_history
     [0, 1, 1, 1, 1, 2, 2, 2, 1, None, None, 0, 1, 1, 1]
@@ -2884,29 +2924,29 @@ Try/Except stack level tracking::
     >>> def type_or_class(x): pass
     >>> c = Code.from_function(type_or_class)
     >>> c.return_(class_or_type_of(Local('x')))
-    >>> dis(c.code())
-      0           0 LOAD_FAST                0 (x)
-                  3 SETUP_EXCEPT             9 (to 15)
-                  6 DUP_TOP
-                  7 LOAD_ATTR                0 (__class__)
-                 10 ROT_TWO
-                 11 POP_BLOCK
-                 12 JUMP_FORWARD            26 (to 41)
-            >>   15 DUP_TOP
-                 16 LOAD_CONST               1 (<...exceptions.AttributeError...>)
-                 19 COMPARE_OP              10 (exception match)
-                 22 JUMP_IF_FALSE           14 (to 39)
-                 25 POP_TOP
-                 26 POP_TOP
-                 27 POP_TOP
-                 28 POP_TOP
-                 29 LOAD_CONST               2 (<type 'type'>)
-                 32 ROT_TWO
-                 33 CALL_FUNCTION            1
-                 36 JUMP_FORWARD             2 (to 41)
-            >>   39 POP_TOP
-                 40 END_FINALLY
-            >>   41 RETURN_VALUE
+    >>> dump(c.code())
+                    LOAD_FAST                0 (x)
+                    SETUP_EXCEPT            L1
+                    DUP_TOP
+                    LOAD_ATTR                0 (__class__)
+                    ROT_TWO
+                    POP_BLOCK
+                    JUMP_FORWARD            L3
+            L1:     DUP_TOP
+                    LOAD_CONST               1 (<...exceptions.AttributeError...>)
+                    COMPARE_OP              10 (exception match)
+                    JUMP_IF_FALSE           L2
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    POP_TOP
+                    LOAD_CONST               2 (<type 'type'>)
+                    ROT_TWO
+                    CALL_FUNCTION            1
+                    JUMP_FORWARD            L3
+            L2:     POP_TOP
+                    END_FINALLY
+            L3:     RETURN_VALUE
 
     >>> type_or_class.func_code = c.code()
     >>> type_or_class(23)
@@ -2973,24 +3013,24 @@ is an implementation of a simple "switch/case/else" structure::
     >>> f(3)
     27
 
-    >>> dis(c.code())
-      0           0 SETUP_LOOP              30 (to 33)
-                  3 LOAD_CONST               1 (<...method get of dict...>)
-                  6 LOAD_FAST                0 (x)
-                  9 CALL_FUNCTION            1
-                 12 JUMP_IF_FALSE           12 (to 27)
-                 15 LOAD_CONST               2 (...)
-                 18 END_FINALLY
-                 19 LOAD_CONST               3 (42)
-                 22 RETURN_VALUE
-                 23 LOAD_CONST               4 ('foo')
-                 26 RETURN_VALUE
-            >>   27 POP_TOP
-                 28 LOAD_CONST               5 (27)
-                 31 RETURN_VALUE
-                 32 POP_BLOCK
-            >>   33 LOAD_CONST               0 (None)
-                 36 RETURN_VALUE
+    >>> dump(c.code())
+                    SETUP_LOOP              L2
+                    LOAD_CONST               1 (<...method get of dict...>)
+                    LOAD_FAST                0 (x)
+                    CALL_FUNCTION            1
+                    JUMP_IF_FALSE           L1
+                    LOAD_CONST               2 (...)
+                    END_FINALLY
+                    LOAD_CONST               3 (42)
+                    RETURN_VALUE
+                    LOAD_CONST               4 ('foo')
+                    RETURN_VALUE
+            L1:     POP_TOP
+                    LOAD_CONST               5 (27)
+                    RETURN_VALUE
+                    POP_BLOCK
+            L2:     LOAD_CONST               0 (None)
+                    RETURN_VALUE
 
 
 TODO
