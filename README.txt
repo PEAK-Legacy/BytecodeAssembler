@@ -18,11 +18,18 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
+
 Changes since version 0.5.2:
 
-* Symbolic disassembly with full emulation of backward-compatible JUMP_IF_TRUE
-  and JUMP_IF_FALSE opcodes on Python 2.7 -- tests now run clean on Python 2.7.
+* Symbolic disassembly with full emulation of backward-compatible
+  ``JUMP_IF_TRUE`` and ``JUMP_IF_FALSE`` opcodes on Python 2.7 -- tests now
+  run clean on Python 2.7.
 
+* Support for backward emulation of Python 2.7's ``JUMP_IF_TRUE_OR_POP`` and
+  ``JUMP_IF_FALSE_OR_POP`` instructions on earlier Python versions; these
+  emulations are also used in BytecodeAssembler's internal code generation,
+  for maximum performance on 2.7+ (with no change to performance on older
+  versions).
 
 Changes since version 0.5.1:
 
@@ -865,6 +872,54 @@ defined more than once::
     AssertionError: Label previously defined
 
 
+More Conditional Jump Instructions
+----------------------------------
+
+In Python 2.7, the traditional ``JUMP_IF_TRUE`` and ``JUMP_IF_FALSE``
+instructions were replaced with four new instructions that either conditionally
+or unconditionally pop the value being tested.  This was done to improve
+performance, since virtually all conditional jumps in Python code pop the
+value on one branch or the other.
+
+To provide better cross-version compatibility, BytecodeAssembler emulates the
+old instructions on Python 2.7 by emitting a ``DUP_TOP`` followed by a
+``POP_JUMP_IF_FALSE`` or ``POP_JUMP_IF_TRUE`` instruction.
+
+However, since this decreases performance, BytecodeAssembler *also* emulates
+Python 2.7's ``JUMP_IF_FALSE_OR_POP`` and ``JUMP_IF_FALSE_OR_TRUE`` opcodes
+on *older* Pythons::
+
+    >>> c = Code()
+    >>> l1, l2 = Label(), Label()
+    >>> c(99, l1.JUMP_IF_FALSE_OR_POP, Return(27), l1)
+    >>> c(l2.JUMP_IF_TRUE_OR_POP, Return(42), l2, Code.RETURN_VALUE)
+    >>> dump(c.code())
+                    LOAD_CONST               1 (99)
+                    JUMP_IF_FALSE           L1
+                    POP_TOP
+                    LOAD_CONST               2 (27)
+                    RETURN_VALUE   
+            L1:     JUMP_IF_TRUE            L2
+                    POP_TOP
+                    LOAD_CONST               3 (42)
+                    RETURN_VALUE
+            L2:     RETURN_VALUE
+
+This means that you can immediately begin using the "or-pop" variations, in
+place of a jump followed by a pop, and BytecodeAssembler will use the faster
+single instruction automatically on Python 2.7+.
+
+BytecodeAssembler *also* supports using Python 2.7's conditional jumps
+that do unconditional pops, but currently cannot emulate them on older Python
+versions, so at the moment you should use them only when your code requires
+Python 2.7.
+
+(Note: for ease in doctesting across Python versions, the ``dump()`` function
+*always* shows the code as if it were generated for Python 2.6 or lower, so
+if you need to check the *actual* bytecodes generated, you must use Python's
+``dis.dis()`` function instead!)
+
+
 N-Way Comparisons
 -----------------
 
@@ -1287,7 +1342,7 @@ prove which way a branch will go::
     ...             if const_value(value):
     ...                 continue        # true constants can be skipped
     ...         except NotAConstant:    # but non-constants require code
-    ...             code(value, end.JUMP_IF_FALSE, Code.POP_TOP)
+    ...             code(value, end.JUMP_IF_FALSE_OR_POP)
     ...         else:       # and false constants end the chain right away
     ...             return code(value, end)
     ...     code(values[-1], end)
@@ -1617,7 +1672,7 @@ implementation::
     ...         return cond, then, else_
     ...     else_clause = Label()
     ...     end_if = Label()
-    ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    ...     code(cond, else_clause.JUMP_IF_FALSE_OR_POP, then)
     ...     code(end_if.JUMP_FORWARD, else_clause, Code.POP_TOP, else_)
     ...     code(end_if)
     >>> If = nodetype()(If)
@@ -1650,7 +1705,7 @@ What we need is something like this instead::
     ...         return cond, then, else_
     ...     else_clause = Label()
     ...     end_if = Label()
-    ...     code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    ...     code(cond, else_clause.JUMP_IF_FALSE_OR_POP, then)
     ...     if code.stack_size is not None:
     ...         end_if.JUMP_FORWARD(code)
     ...     code(else_clause, Code.POP_TOP, else_, end_if)           
@@ -2602,7 +2657,7 @@ Stack tracking on jumps::
     >>> c = Code()
     >>> else_ = Label()
     >>> end = Label()
-    >>> c(99, else_.JUMP_IF_TRUE, Code.POP_TOP, end.JUMP_FORWARD)
+    >>> c(99, else_.JUMP_IF_TRUE_OR_POP, end.JUMP_FORWARD)
     >>> c(else_, Code.POP_TOP, end)
     >>> dump(c.code())
                     LOAD_CONST               1 (99)
@@ -2614,9 +2669,9 @@ Stack tracking on jumps::
     >>> c.stack_size
     0
     >>> if sys.version>='2.7':
-    ...     print c.stack_history == [0, 1, 1, 1, 2, 1, 1, 1, 0, None, None, 1]
+    ...     print c.stack_history == [0, 1, 1, 1,    0, 0, 0, None, None, 1]
     ... else:
-    ...     print c.stack_history == [0, 1, 1, 1,    1, 1, 1, 0, None, None, 1]
+    ...     print c.stack_history == [0, 1, 1, 1, 1, 1, 1, 0, None, None, 1]
     True
     
 

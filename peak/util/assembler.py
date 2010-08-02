@@ -218,7 +218,7 @@ def TryExcept(body, handlers, else_=Pass, code=None):
         next_test = Label()
         Compare(Code.DUP_TOP, [('exception match', typ)], code)
         code(
-            next_test.JUMP_IF_FALSE, Code.POP_TOP,      # remove condition
+            next_test.JUMP_IF_FALSE_OR_POP,             # remove condition
             Code.POP_TOP, Code.POP_TOP, Code.POP_TOP,   # remove exc info
             handler
         )
@@ -332,7 +332,7 @@ def If(cond, then, else_=Pass, code=None):
         return cond, then, else_
     else_clause = Label()
     end_if = Label()
-    code(cond, else_clause.JUMP_IF_FALSE, Code.POP_TOP, then)
+    code(cond, else_clause.JUMP_IF_FALSE_OR_POP, then)
     if code.stack_size is not None:
         end_if.JUMP_FORWARD(code)
     code(else_clause, Code.POP_TOP, else_, end_if)
@@ -383,8 +383,7 @@ def Compare(expr, ops, code=None):
         code.DUP_TOP()
         code.ROT_THREE()
         code.COMPARE_OP(op)
-        fail.JUMP_IF_FALSE(code)
-        code.POP_TOP()
+        fail.JUMP_IF_FALSE_OR_POP(code)
     op, arg = ops[-1]
     code(arg)
     code.COMPARE_OP(op)
@@ -408,6 +407,7 @@ deref_to_deref = dict([(k,k) for k in hasfree])
 
 
 
+
 nodetype()
 def And(values, code=None):
     if code is None:
@@ -418,7 +418,7 @@ def And(values, code=None):
             if const_value(value):
                 continue        # true constants can be skipped
         except NotAConstant:    # but non-constants require code
-            code(value, end.JUMP_IF_FALSE, Code.POP_TOP)
+            code(value, end.JUMP_IF_FALSE_OR_POP)
         else:       # and false constants end the chain right away
             return code(value, end)
     code(values[-1], end)
@@ -433,7 +433,7 @@ def Or(values, code=None):
             if not const_value(value):
                 continue        # false constants can be skipped
         except NotAConstant:    # but non-constants require code
-            code(value, end.JUMP_IF_TRUE, Code.POP_TOP)
+            code(value, end.JUMP_IF_TRUE_OR_POP)
         else:       # and true constants end the chain right away
             return code(value, end)
     code(values[-1], end)
@@ -758,6 +758,7 @@ class Code(object):
             self.stack_size += 2
         else:
             old_level = self.stack_size
+        self.stack_size -= (op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP))
         posn = self.here()
 
         if arg is not None:
@@ -775,7 +776,6 @@ class Code(object):
     def COMPARE_OP(self, op):
         self.stackchange((2,1))
         self.emit_arg(COMPARE_OP, compares[op])
-
 
     def setup_block(self, op):
         jmp = self.jump(op)
@@ -824,8 +824,6 @@ class Code(object):
             self.POP_TOP()
             return lbl
         globals()['JUMP_IF_TRUE_OR_POP'] = -1
-    else:
-        pass # XXX implement branching stack effects for JUMP_IF_TRUE_OR_POP
         
     if 'JUMP_IF_FALSE_OR_POP' not in opcode:
         def JUMP_IF_FALSE_OR_POP(self, address=None):
@@ -833,8 +831,6 @@ class Code(object):
             self.POP_TOP()
             return lbl
         globals()['JUMP_IF_FALSE_OR_POP'] = -1
-    else:
-        pass # XXX implement branching stack effects for JUMP_IF_FALSE_OR_POP
 
     if 'JUMP_IF_TRUE' not in opcode:
         def JUMP_IF_TRUE(self, address=None):
@@ -855,6 +851,10 @@ class Code(object):
             self.stackchange((depth+1, depth))
             self.emit_arg(LIST_APPEND, depth)
     
+
+
+
+
 
 
 
@@ -1295,6 +1295,8 @@ def dump(code):
             s, op, arg, jump, end = instructions[i+1]
             print ['JUMP_IF_FALSE', 'JUMP_IF_TRUE'][op==POP_JUMP_IF_TRUE].ljust(15),
             i+=1
+        elif op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP):
+            print opname[op][:-7].ljust(15),
         else:
             print opname[op].ljust(15),
         if jump is not None:
@@ -1303,12 +1305,10 @@ def dump(code):
             print repr(arg).rjust(10), 
             if op in argtype:
                 print '(%s)' % (locals()[argtype[op]][arg]),
-        print 
+        print
+        if op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP):
+            print '       ', ''.ljust(7), 'POP_TOP'
         i+=1
-
-
-
-
 
 class _se:
     """Quick way of defining static stack effects of opcodes"""
@@ -1317,7 +1317,6 @@ class _se:
     ROT_THREE = 3,3
     ROT_FOUR  = 4,4
     DUP_TOP   = 1,2
-
     UNARY_POSITIVE = UNARY_NEGATIVE = UNARY_NOT = UNARY_CONVERT = \
         UNARY_INVERT = GET_ITER = LOAD_ATTR = IMPORT_FROM = 1,1
 
@@ -1349,7 +1348,8 @@ class _se:
         LOAD_CLOSURE = LOAD_DEREF = IMPORT_NAME = BUILD_MAP = 0,1
 
     EXEC_STMT = BUILD_CLASS = 3,0
-    JUMP_IF_TRUE = JUMP_IF_FALSE = 1,1
+    JUMP_IF_TRUE = JUMP_IF_FALSE = \
+        JUMP_IF_TRUE_OR_POP = JUMP_IF_FALSE_OR_POP = 1,1
 
 if sys.version>="2.5":
     _se.YIELD_VALUE = 1, 1
