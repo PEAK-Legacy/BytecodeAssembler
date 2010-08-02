@@ -313,12 +313,12 @@ def LCAppend(value, code=None):
     if sys.version<"2.4":
         code.CALL_FUNCTION(1)
         code.POP_TOP()
+    elif sys.version>="2.7":    # ick
+        code.LIST_APPEND(1)
+        code.POP_TOP()
     else:
         code.LIST_APPEND()
     return r
-
-
-
 
 
 
@@ -844,13 +844,11 @@ class Code(object):
             self.DUP_TOP()
             return self.POP_JUMP_IF_FALSE(address)
 
-
+    if 'LIST_APPEND' in opcode and LIST_APPEND>=HAVE_ARGUMENT:
+        def LIST_APPEND(self, depth):
+            self.stackchange((depth+1, depth))
+            self.emit_arg(LIST_APPEND, depth)
     
-
-
-
-
-
 
 
 
