@@ -6,7 +6,7 @@ from setuptools import setup
 
 # Metadata
 PACKAGE_NAME = "BytecodeAssembler"
-PACKAGE_VERSION = "0.5.1"
+PACKAGE_VERSION = "0.5.2"
 PACKAGES = ['peak', 'peak.util']
 
 def get_description():
@@ -32,7 +32,7 @@ setup(
     long_description = get_description(),
     author="Phillip J. Eby",
     author_email="peak@eby-sarna.com",
-    license="PSF or ZPL",
+    license="http://www.apache.org/licenses/LICENSE-2.0",
     install_requires = ['DecoratorTools>=1.2', 'SymbolType>=1.0'],
     test_suite = 'test_assembler',
     packages = PACKAGES,

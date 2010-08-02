@@ -18,6 +18,17 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
+
+Changes since version 0.5.1:
+
+* Initial support for Python 2.7's new opcodes and semantics changes, mostly
+  by emulating older versions' behavior with macros.  (0.5.2 is really just
+  a quick-fix release to allow packages using BytecodeAssembler to run on 2.7
+  without having to change any of their code generation; future releases will
+  provide proper support for the new and changed opcodes, as well as a test
+  suite that doesn't show spurious differences in the disassembly listings
+  under Python 2.7.)
+
 Changes since version 0.5:
 
 * Fix incorrect stack size calculation for ``MAKE_CLOSURE`` on Python 2.5+
