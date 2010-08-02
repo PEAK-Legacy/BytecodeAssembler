@@ -1315,10 +1315,10 @@ arguments) matches that of the original function or code objects::
 
     >>> import inspect
 
-    >>> inspect.getargspec(f1)
+    >>> tuple(inspect.getargspec(f1))
     (['a', 'b'], 'c', 'd', None)
 
-    >>> inspect.getargspec(f2)
+    >>> tuple(inspect.getargspec(f2))
     (['a', 'b'], 'c', 'd', None)
 
 Note that these constructors do not copy any actual *code* from the code
@@ -1357,10 +1357,10 @@ This is roughly the same code that Python would generate to do the same
 unpacking process, and is designed so that the ``inspect`` module will
 recognize it as an argument unpacking prologue::
 
-    >>> inspect.getargspec(f3)
+    >>> tuple(inspect.getargspec(f3))
     (['a', ['b', 'c'], ['d', ['e', 'f']]], None, None, None)
 
-    >>> inspect.getargspec(f4)
+    >>> tuple(inspect.getargspec(f4))
     (['a', ['b', 'c'], ['d', ['e', 'f']]], None, None, None)
 
 You can also use the ``from_spec(name='<lambda>', args=(), var=None, kw=None)``
@@ -1376,7 +1376,7 @@ classmethod to explicitly set a name and argument spec for a new code object::
     >>> c.co_argcount
     3
     
-    >>> inspect.getargs(c.code())
+    >>> tuple(inspect.getargs(c.code()))
     (['b', ['c', 'd'], 'e'], 'f', 'g')
 
 
@@ -1403,7 +1403,7 @@ want your code to be a function, you can set them as follows::
     42
 
     >>> import inspect
-    >>> inspect.getargspec(f)
+    >>> tuple(inspect.getargspec(f))
     (['a', 'b', 'c'], None, None, None)
 
 Although Python code objects want ``co_varnames`` to be a tuple, ``Code``
@@ -2111,7 +2111,7 @@ child::
     >>> c.co_filename
     'testname'
 
-    >>> inspect.getargs(c.code(p))
+    >>> tuple(inspect.getargs(c.code(p)))
     (['a', 'b'], 'c', 'd')
 
 Notice that you must pass the parent code object to the child's ``.code()``
@@ -2183,7 +2183,7 @@ run it, to get the function we defined::
     >>> f
     <function f at ...>
 
-    >>> inspect.getargspec(f)
+    >>> tuple(inspect.getargspec(f))
     (['a'], None, None, (42,))
 
     >>> f()
@@ -2211,7 +2211,7 @@ Now let's create a doubly nested function, with some extras::
     >>> f
     <function f at ...>
 
-    >>> inspect.getargspec(f)
+    >>> tuple(inspect.getargspec(f))
     (['a', 'b'], 'c', 'd', (99, 66))
 
     >>> dis(f)
@@ -2914,7 +2914,7 @@ is an implementation of a simple "switch/case/else" structure::
     >>> from peak.util.assembler import LOAD_CONST, POP_BLOCK
 
     >>> import sys
-    >>> WHY_CONTINUE = {'2.3':5, '2.4':32, '2.5':32}[sys.version[:3]]
+    >>> WHY_CONTINUE = {'2.3':5}.get(sys.version[:3], 32)
 
     >>> def Switch(expr, cases, default=Pass, code=None):
     ...     if code is None:
