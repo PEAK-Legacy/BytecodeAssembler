@@ -449,6 +449,8 @@ def with_name(f, name):
 
 
 
+EXTRA_JUMPS = 'JUMP_IF_FALSE_OR_POP JUMP_IF_TRUE_OR_POP JUMP_IF_FALSE JUMP_IF_TRUE'.split()
+
 class Label(object):
     """A forward-referenceable location in a ``Code`` object"""
 
@@ -470,15 +472,15 @@ class Label(object):
     def POP_BLOCK(self, code):
         self.backpatches[0] = code.POP_BLOCK()
 
-    for op in hasjrel+hasjabs:
-        if opname[op] not in locals():
-            def do_jump(self, code, op=op):
-                method = getattr(code, opname[op])
+    for name in [opname[op] for op in hasjrel+hasjabs]+EXTRA_JUMPS:
+        if name not in locals():
+            def do_jump(self, code, name=name):
+                method = getattr(code, name)
                 if self.resolution is None:
                     return self.backpatches.append(method())
                 else:
                     return method(self.resolution)
-            locals()[opname[op]] = with_name(do_jump, opname[op])
+            locals()[name] = with_name(do_jump, name)
     del do_jump
 
     def __call__(self, code):
@@ -487,8 +489,6 @@ class Label(object):
         self.resolution = resolution = len(code.co_code)
         for p in self.backpatches:
             if p: p()
-
-
 
 class Code(object):
     co_argcount = 0
@@ -816,6 +816,47 @@ class Code(object):
                 return else_
         else:
             return fwd
+
+
+    if 'JUMP_IF_TRUE_OR_POP' not in opcode:
+        def JUMP_IF_TRUE_OR_POP(self, address=None):
+            self.JUMP_IF_TRUE(address)
+            self.POP_TOP()
+    else:
+        pass # XXX implement branching stack effects for JUMP_IF_TRUE_OR_POP
+        
+    if 'JUMP_IF_FALSE_OR_POP' not in opcode:
+        def JUMP_IF_FALSE_OR_POP(self, address=None):
+            self.JUMP_IF_FALSE(address)
+            self.POP_TOP()
+    else:
+        pass # XXX implement branching stack effects for JUMP_IF_FALSE_OR_POP
+
+    if 'JUMP_IF_TRUE' not in opcode:
+        def JUMP_IF_TRUE(self, address=None):
+            self.DUP_TOP()
+            self.POP_JUMP_IF_TRUE(address)
+       
+    if 'JUMP_IF_FALSE' not in opcode:
+        def JUMP_IF_FALSE(self, address=None):
+            self.DUP_TOP()
+            self.POP_JUMP_IF_FALSE(address)
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     def assert_loop(self):
@@ -1189,7 +1230,7 @@ def fold_args(f, *args):
 
 class _se:
     """Quick way of defining static stack effects of opcodes"""
-    POP_TOP   = END_FINALLY = 1,0
+    POP_TOP   = END_FINALLY = POP_JUMP_IF_FALSE = POP_JUMP_IF_TRUE = 1,0
     ROT_TWO   = 2,2
     ROT_THREE = 3,3
     ROT_FOUR  = 4,4
