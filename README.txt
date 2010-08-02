@@ -891,17 +891,17 @@ on *older* Pythons::
 
     >>> c = Code()
     >>> l1, l2 = Label(), Label()
-    >>> c(99, l1.JUMP_IF_FALSE_OR_POP, Return(27), l1)
+    >>> c(Local('a'), l1.JUMP_IF_FALSE_OR_POP, Return(27), l1)
     >>> c(l2.JUMP_IF_TRUE_OR_POP, Return(42), l2, Code.RETURN_VALUE)
     >>> dump(c.code())
-                    LOAD_CONST               1 (99)
+                    LOAD_FAST                0 (a)
                     JUMP_IF_FALSE           L1
                     POP_TOP
-                    LOAD_CONST               2 (27)
+                    LOAD_CONST               1 (27)
                     RETURN_VALUE   
             L1:     JUMP_IF_TRUE            L2
                     POP_TOP
-                    LOAD_CONST               3 (42)
+                    LOAD_CONST               2 (42)
                     RETURN_VALUE
             L2:     RETURN_VALUE
 
