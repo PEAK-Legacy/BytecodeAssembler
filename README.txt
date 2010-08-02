@@ -2608,8 +2608,12 @@ Stack tracking on jumps::
 
     >>> c.stack_size
     0
-    >>> c.stack_history
-    [0, 1, 1, 1, 1, 1, 1, 0, None, None, 1]
+    >>> if sys.version>='2.7':
+    ...     print c.stack_history == [0, 1, 1, 1, 2, 1, 1, 1, 0, None, None, 1]
+    ... else:
+    ...     print c.stack_history == [0, 1, 1, 1,    1, 1, 1, 0, None, None, 1]
+    True
+    
 
     >>> c = Code()
     >>> fwd = c.JUMP_FORWARD()
@@ -2838,7 +2842,7 @@ Labels and backpatching forward references::
     >>> c = Code()
     >>> where = c.here()
     >>> c.LOAD_CONST(1)
-    >>> c.JUMP_IF_TRUE(where)
+    >>> c.JUMP_FORWARD(where)
     Traceback (most recent call last):
       ...
     AssertionError: Relative jumps can't go backwards

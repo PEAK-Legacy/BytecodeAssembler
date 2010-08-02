@@ -823,7 +823,7 @@ class Code(object):
             lbl = self.JUMP_IF_TRUE(address)
             self.POP_TOP()
             return lbl
-        JUMP_IF_TRUE_OR_POP = -1
+        globals()['JUMP_IF_TRUE_OR_POP'] = -1
     else:
         pass # XXX implement branching stack effects for JUMP_IF_TRUE_OR_POP
         
@@ -832,7 +832,7 @@ class Code(object):
             lbl = self.JUMP_IF_FALSE(address)
             self.POP_TOP()
             return lbl
-        JUMP_IF_FALSE_OR_POP = -1
+        globals()['JUMP_IF_FALSE_OR_POP'] = -1
     else:
         pass # XXX implement branching stack effects for JUMP_IF_FALSE_OR_POP
 
@@ -841,14 +841,14 @@ class Code(object):
             self.DUP_TOP()
             return self.POP_JUMP_IF_TRUE(address)
     else:
-        POP_JUMP_IF_TRUE = -1
+        globals()['POP_JUMP_IF_TRUE'] = -1
 
     if 'JUMP_IF_FALSE' not in opcode:
         def JUMP_IF_FALSE(self, address=None):
             self.DUP_TOP()
             return self.POP_JUMP_IF_FALSE(address)
     else:
-        POP_JUMP_IF_FALSE = -1
+        globals()['POP_JUMP_IF_FALSE'] = -1
 
     if 'LIST_APPEND' in opcode and LIST_APPEND>=HAVE_ARGUMENT:
         def LIST_APPEND(self, depth):
