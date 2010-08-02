@@ -741,7 +741,8 @@ class Code(object):
             target = offset
             if op not in hasjabs:
                 target = target - (posn+3)
-                assert target>=0, "Relative jumps can't go backwards"
+                if target<0:
+                    raise AssertionError("Relative jumps can't go backwards")
                 if target>0xFFFF:
                     target = offset - (posn+6)
             return target
@@ -760,7 +761,6 @@ class Code(object):
             old_level = self.stack_size
         self.stack_size -= (op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP))
         posn = self.here()
-
         if arg is not None:
             self.emit_arg(op, jump_target(arg))
             self.branch_stack(arg, old_level)
