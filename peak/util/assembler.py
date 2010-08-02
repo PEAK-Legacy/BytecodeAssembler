@@ -823,6 +823,7 @@ class Code(object):
             lbl = self.JUMP_IF_TRUE(address)
             self.POP_TOP()
             return lbl
+        JUMP_IF_TRUE_OR_POP = -1
     else:
         pass # XXX implement branching stack effects for JUMP_IF_TRUE_OR_POP
         
@@ -831,6 +832,7 @@ class Code(object):
             lbl = self.JUMP_IF_FALSE(address)
             self.POP_TOP()
             return lbl
+        JUMP_IF_FALSE_OR_POP = -1
     else:
         pass # XXX implement branching stack effects for JUMP_IF_FALSE_OR_POP
 
@@ -838,23 +840,21 @@ class Code(object):
         def JUMP_IF_TRUE(self, address=None):
             self.DUP_TOP()
             return self.POP_JUMP_IF_TRUE(address)
-       
+    else:
+        POP_JUMP_IF_TRUE = -1
+
     if 'JUMP_IF_FALSE' not in opcode:
         def JUMP_IF_FALSE(self, address=None):
             self.DUP_TOP()
             return self.POP_JUMP_IF_FALSE(address)
+    else:
+        POP_JUMP_IF_FALSE = -1
 
     if 'LIST_APPEND' in opcode and LIST_APPEND>=HAVE_ARGUMENT:
         def LIST_APPEND(self, depth):
             self.stackchange((depth+1, depth))
             self.emit_arg(LIST_APPEND, depth)
     
-
-
-
-
-
-
 
 
 
@@ -1287,9 +1287,16 @@ def dump(code):
     for jump in lbl:
         labels.setdefault(jump, "L%d:" % (len(labels)+1))
 
-    for start, op, arg, jump, end in instructions:
+    i = 0
+    while i<len(instructions):
+        start, op, arg, jump, end = instructions[i]
         print '       ', labels.get(start, '').ljust(7),
-        print opname[op].ljust(15),
+        if op==DUP_TOP and instructions[i+1][1] in (POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE):
+            s, op, arg, jump, end = instructions[i+1]
+            print ['JUMP_IF_FALSE', 'JUMP_IF_TRUE'][op==POP_JUMP_IF_TRUE].ljust(15),
+            i+=1
+        else:
+            print opname[op].ljust(15),
         if jump is not None:
             print labels[jump][:-1].rjust(10),
         elif arg is not None:
@@ -1297,14 +1304,7 @@ def dump(code):
             if op in argtype:
                 print '(%s)' % (locals()[argtype[op]][arg]),
         print 
-
-
-
-
-
-
-
-
+        i+=1
 
 
 
