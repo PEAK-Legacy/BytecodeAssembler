@@ -820,27 +820,29 @@ class Code(object):
 
     if 'JUMP_IF_TRUE_OR_POP' not in opcode:
         def JUMP_IF_TRUE_OR_POP(self, address=None):
-            self.JUMP_IF_TRUE(address)
+            lbl = self.JUMP_IF_TRUE(address)
             self.POP_TOP()
+            return lbl
     else:
         pass # XXX implement branching stack effects for JUMP_IF_TRUE_OR_POP
         
     if 'JUMP_IF_FALSE_OR_POP' not in opcode:
         def JUMP_IF_FALSE_OR_POP(self, address=None):
-            self.JUMP_IF_FALSE(address)
+            lbl = self.JUMP_IF_FALSE(address)
             self.POP_TOP()
+            return lbl
     else:
         pass # XXX implement branching stack effects for JUMP_IF_FALSE_OR_POP
 
     if 'JUMP_IF_TRUE' not in opcode:
         def JUMP_IF_TRUE(self, address=None):
             self.DUP_TOP()
-            self.POP_JUMP_IF_TRUE(address)
+            return self.POP_JUMP_IF_TRUE(address)
        
     if 'JUMP_IF_FALSE' not in opcode:
         def JUMP_IF_FALSE(self, address=None):
             self.DUP_TOP()
-            self.POP_JUMP_IF_FALSE(address)
+            return self.POP_JUMP_IF_FALSE(address)
 
 
     
