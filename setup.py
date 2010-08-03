@@ -32,7 +32,7 @@ setup(
     long_description = get_description(),
     author="Phillip J. Eby",
     author_email="peak@eby-sarna.com",
-    license="http://www.apache.org/licenses/LICENSE-2.0",
+    license="ZPL 2.1",
     install_requires = ['DecoratorTools>=1.2', 'SymbolType>=1.0'],
     test_suite = 'test_assembler',
     packages = PACKAGES,
