@@ -259,10 +259,10 @@ def TryExcept(body, handlers, else_=Pass, code=None):
         code(
             next_test.JUMP_IF_FALSE_OR_POP,             # remove condition
             Code.POP_TOP, Code.POP_TOP, Code.POP_TOP,   # remove exc info
-            handler
         )
         if 'POP_EXCEPT' in opcode:
             code(Code.POP_EXCEPT)
+        code(handler)
         if code.stack_size is not None:
             code(done.JUMP_FORWARD)
         code(next_test, Code.POP_TOP)            # remove condition
