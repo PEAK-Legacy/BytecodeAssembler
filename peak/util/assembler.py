@@ -39,6 +39,8 @@ __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
 
 
 
+to_code = lambda x: x.tostring()
+
 try:
     from new import code as NEW_CODE, function
 except ImportError:
@@ -46,23 +48,21 @@ except ImportError:
     NEW_CODE = lambda ac, *args: CodeType(ac, 0, *args)
     long = ord = int
     unicode = basestring = str
-    to_code = lambda x: x.tobytes()
+    def to_code(x):
+        global to_code
+        if not hasattr(x, 'tobytes'):
+            to_code = lambda x: x.tostring()
+        else:
+            to_code = lambda x: x.tostring()
+        return to_code(x)
+
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
         '__code__', '__globals__', '__defaults__', '__closure__', '__func__'
     )
 else:
-    to_code = lambda x: x.tostring()
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
         'func_code', 'func_globals', 'func_defaults', 'func_closure', 'im_func'
     )
-
-
-
-
-
-
-
-
 
 
 
@@ -250,11 +250,9 @@ def TryExcept(body, handlers, else_=Pass, code=None):
         return body, tuple(handlers), else_
     okay = Label()
     done = Label()
-    code(
-        okay.SETUP_EXCEPT,
-        body,
-        okay.POP_BLOCK
-    )
+    code(okay.SETUP_EXCEPT, body, okay.POP_BLOCK)
+    if 'POP_EXCEPT' in opcode:
+        code.stack_size += 3
     for typ, handler in handlers:
         next_test = Label()
         Compare(Code.DUP_TOP, [('exception match', typ)], code)
@@ -263,6 +261,8 @@ def TryExcept(body, handlers, else_=Pass, code=None):
             Code.POP_TOP, Code.POP_TOP, Code.POP_TOP,   # remove exc info
             handler
         )
+        if 'POP_EXCEPT' in opcode:
+            code(Code.POP_EXCEPT)
         if code.stack_size is not None:
             code(done.JUMP_FORWARD)
         code(next_test, Code.POP_TOP)            # remove condition
@@ -735,13 +735,9 @@ class Code(object):
         self.stack_size -= inputs   # check underflow
         self.stack_size += outputs  # update maximum height
 
+
     def stack_unknown(self):
         self._ss = None
-
-
-
-
-
 
     def branch_stack(self, location, expected):
         if location >= len(self.stack_history):
@@ -763,9 +759,6 @@ class Code(object):
                 "Stack level mismatch: actual=%s expected=%s"
                 % (actual, expected)
             )
-
-
-
 
 
 
@@ -1321,13 +1314,11 @@ def dump(code):
     """Disassemble code in a symbolic manner, i.e., without offsets"""
     code = getattr(code, FUNC, code)
     code = getattr(code, CODE, code)
-
     co_names = code.co_names
     co_consts = [repr(x) for x in code.co_consts]
     co_varnames = code.co_varnames
     cmp_ops = cmp_op
     free = code.co_cellvars + code.co_freevars
-
     labels = {}
     instructions = list(iter_code(code.co_code))
     lbl = [jump for start, op, arg, jump, end in instructions if jump is not None]
@@ -1338,7 +1329,7 @@ def dump(code):
     i = 0
     while i<len(instructions):
         start, op, arg, jump, end = instructions[i]
-        ln = '         '+labels.get(start, '').ljust(7)
+        ln = '        '+labels.get(start, '').ljust(7)
         if op==DUP_TOP and instructions[i+1][1] in (POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE):
             s, op, arg, jump, end = instructions[i+1]
             ln+=' '+['JUMP_IF_FALSE', 'JUMP_IF_TRUE'][op==POP_JUMP_IF_TRUE].ljust(15)
@@ -1357,6 +1348,8 @@ def dump(code):
         if op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP):
             print('        '+''.ljust(7) + ' POP_TOP')
         i+=1
+
+
 
 class _se:
     """Quick way of defining static stack effects of opcodes"""
@@ -1384,8 +1377,8 @@ class _se:
         (2,0),(3,0),(3,0),(4,0)
     DELETE_SLICE_0, DELETE_SLICE_1, DELETE_SLICE_2, DELETE_SLICE_3 = \
         (1,0),(2,0),(2,0),(3,0)
-
-    STORE_SUBSCR = 3,0
+    
+    STORE_SUBSCR = POP_EXCEPT = 3,0
     DELETE_SUBSCR = STORE_ATTR = 2,0
     DELETE_ATTR = STORE_DEREF = 1,0
     PRINT_EXPR = PRINT_ITEM = PRINT_NEWLINE_TO = IMPORT_STAR = 1,0
