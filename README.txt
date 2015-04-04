@@ -20,7 +20,7 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 
 
 Changes since version 0.5.2:
-
+    
 * Symbolic disassembly with full emulation of backward-compatible
   ``JUMP_IF_TRUE`` and ``JUMP_IF_FALSE`` opcodes on Python 2.7 -- tests now
   run clean on Python 2.7.
@@ -210,15 +210,22 @@ As you can see, ``Code`` instances automatically generate a line number table
 that maps each ``set_lineno()`` to the corresponding position in the bytecode.
     
 And of course, the resulting code objects can be run with ``eval()`` or
-``exec``, or used with ``new.function`` to create a function::
+``exec``, or used with ``new.function``/``types.FunctionType`` to create a
+function::
 
     >>> eval(c.code())
     42
 
-    >>> exec c.code()   # exec discards the return value, so no output here
+    >>> exec(c.code())   # exec discards the return value, so no output here
 
-    >>> import new
-    >>> f = new.function(c.code(), globals())
+    >>> try:
+    ...     from new import function
+    ... except ImportError:  # Python 3 workarounds
+    ...     from types import FunctionType as function
+    ...     long = int
+    ...     unicode = str
+
+    >>> f = function(c.code(), globals())
     >>> f()
     42
 
@@ -339,7 +346,7 @@ supplied::
     >>> c.RETURN_VALUE()
 
     >>> eval(c.code())          # computes type(27)
-    <type 'int'>
+    <... 'int'>
 
     >>> c = Code()
     >>> c.LOAD_CONST(dict)
@@ -475,30 +482,31 @@ If an argument is an integer, long, float, complex, string, unicode, boolean,
 ``None``, or Python code object, it is treated as though it was passed to
 the ``LOAD_CONST`` method directly::
 
+
+
     >>> c = Code()
-    >>> c(1, 2L, 3.0, 4j+5, "6", u"7", False, None, c.code())
+    >>> c(1, long(2), 3.0, 4j+5, "6", unicode("7"), False, None, c.code())
     >>> dis(c.code())
       0           0 LOAD_CONST               1 (1)
-                  3 LOAD_CONST               2 (2L)
+                  3 LOAD_CONST               2 (2...)
                   6 LOAD_CONST               3 (3.0)
                   9 LOAD_CONST               4 ((5+4j))
                  12 LOAD_CONST               5 ('6')
-                 15 LOAD_CONST               6 (u'7')
+                 15 LOAD_CONST               6 (...'7')
                  18 LOAD_CONST               7 (False)
                  21 LOAD_CONST               0 (None)
-                 24 LOAD_CONST               8 (<code object <lambda> at ...>)
+                 24 LOAD_CONST               8 (<code object <lambda>...>)
 
 Note that although some values of different types may compare equal to each
 other, ``Code`` objects will not substitute a value of a different type than
 the one you requested::
 
     >>> c = Code()
-    >>> c(1, True, 1.0, 1L)     # equal, but different types
+    >>> c(1, True, 1.0)     # equal, but different types
     >>> dis(c.code())
       0           0 LOAD_CONST               1 (1)
                   3 LOAD_CONST               2 (True)
                   6 LOAD_CONST               3 (1.0)
-                  9 LOAD_CONST               4 (1L)
 
 Simple Containers
 -----------------
@@ -680,7 +688,7 @@ is used, and constant folding is done if possible::
 
 
     >>> Getattr(Const(object), '__class__') # const expression, const result
-    Const(<type 'type'>)
+    Const(<... 'type'>)
 
 Or the attribute name can be an expression, in which case a ``getattr()`` call
 is compiled instead::
@@ -1029,15 +1037,15 @@ as-is::
 
     >>> from peak.util.assembler import const_value
 
-    >>> simple_values = [1, 2L, 3.0, 4j+5, "6", u"7", False, None, c.code()]
+    >>> simple_values = [1, long(2), 3.0, 4j+5, "6", unicode("7"), False, None, c.code()]
 
-    >>> map(const_value, simple_values)
-    [1, 2L, 3.0, (5+4j), '6', u'7', False, None, <code object <lambda> ...>]
+    >>> list(map(const_value, simple_values))
+    [1, 2..., 3.0, (5+4j), '6', ...'7', False, None, <code object <lambda>...>]
 
 Values wrapped in a ``Const()`` are also returned as-is::
 
-    >>> map(const_value, map(Const, simple_values))
-    [1, 2L, 3.0, (5+4j), '6', u'7', False, None, <code object <lambda> ...>]
+    >>> list(map(const_value, map(Const, simple_values)))
+    [1, 2..., 3.0, (5+4j), '6', ...'7', False, None, <code object <lambda>...>]
 
 But no other node types produce constant values; instead, ``NotAConstant`` is
 raised::
@@ -1086,7 +1094,7 @@ If a ``Call`` can thus compute its value in advance, it does so, returning a
 ``Const`` node instead of a ``Call`` node::
 
     >>> Call( Const(type), [1] )
-    Const(<type 'int'>)
+    Const(<... 'int'>)
 
 Thus, you can also take the ``const_value()`` of such calls::
 
@@ -1097,7 +1105,7 @@ Which means that constant folding can propagate up an AST if the result is
 passed in to another ``Call``::
 
     >>> Call(Const(type), [Call( Const(dict), [], [('x',27)] )])
-    Const(<type 'dict'>)
+    Const(<... 'dict'>)
 
 Notice that this folding takes place eagerly, during AST construction.  If you
 want to implement delayed folding after constant propagation or variable
@@ -1111,12 +1119,12 @@ at runtime.  Compare::
     >>> c = Code()
     >>> c( Call(Const(type), [1]) )
     >>> dis(c.code())
-      0           0 LOAD_CONST               1 (<type 'int'>)
+      0           0 LOAD_CONST               1 (<... 'int'>)
 
     >>> c = Code()
     >>> c( Call(Const(type), [1], fold=False) )
     >>> dis(c.code())
-      0           0 LOAD_CONST               1 (<type 'type'>)
+      0           0 LOAD_CONST               1 (<... 'type'>)
                   3 LOAD_CONST               2 (1)
                   6 CALL_FUNCTION            1
 
@@ -1387,7 +1395,7 @@ can also do constant folding at AST construction time, using the
     >>> Getattr = nodetype()(Getattr)
 
     >>> const_value(Getattr(1, '__class__'))
-    <type 'int'>
+    <... 'int'>
 
 The ``fold_args()`` function tries to evaluate the node immediately, if all of
 its arguments are constants, by creating a temporary ``Code`` object, and
@@ -1422,7 +1430,7 @@ arguments) matches that of the original function or code objects::
     ...     pass
 
     >>> c = Code.from_function(f1)
-    >>> f2 = new.function(c.code(), globals())
+    >>> f2 = function(c.code(), globals())
 
     >>> import inspect
 
@@ -1451,7 +1459,7 @@ arguments properly::
     >>> def f3(a, (b,c), (d,(e,f))):
     ...     pass
 
-    >>> f4 = new.function(Code.from_function(f3).code(), globals())
+    >>> f4 = function(Code.from_function(f3).code(), globals())
     >>> dis(f4)
       0           0 LOAD_FAST                1 (.1)
                   3 UNPACK_SEQUENCE          2
@@ -1509,7 +1517,7 @@ want your code to be a function, you can set them as follows::
     >>> c.LOAD_CONST(42)
     >>> c.RETURN_VALUE()
 
-    >>> f = new.function(c.code(), globals())
+    >>> f = function(c.code(), globals())
     >>> f(1,2,3)
     42
 
@@ -1645,7 +1653,7 @@ stack size is ``None``, as you will receive an ``AssertionError``::
 
     >>> c = Code()
     >>> fwd = c.JUMP_FORWARD()
-    >>> print c.stack_size  # forward jump marks stack size as unknown
+    >>> print(c.stack_size)  # forward jump marks stack size as unknown
     None
 
     >>> c.LOAD_CONST(42)
@@ -1750,7 +1758,7 @@ an error::
 
     >>> c.POP_BLOCK()
     >>> c.code()
-    <code object <lambda> ...>
+    <code object <lambda>...>
 
 
 Exception Stack Size Adjustment
@@ -1871,7 +1879,7 @@ and an optional "else" clause::
                     POP_BLOCK
                     JUMP_FORWARD            L4
             L1:     DUP_TOP
-                    LOAD_CONST               2 (<...exceptions.KeyError...>)
+                    LOAD_CONST               2 (<...KeyError...>)
                     COMPARE_OP              10 (exception match)
                     JUMP_IF_FALSE           L2
                     POP_TOP
@@ -1882,7 +1890,7 @@ and an optional "else" clause::
                     JUMP_FORWARD            L5
             L2:     POP_TOP
                     DUP_TOP
-                    LOAD_CONST               4 (<...exceptions.TypeError...>)
+                    LOAD_CONST               4 (<...TypeError...>)
                     COMPARE_OP              10 (exception match)
                     JUMP_IF_FALSE           L3
                     POP_TOP
@@ -2067,7 +2075,7 @@ break/continue support).  It takes an iterable expression, an assignment
 clause, and a loop body::
 
     >>> from peak.util.assembler import For
-    >>> y = Call(Const(range), (3,))
+    >>> y = Call(Const(list), (Call(Const(range), (3,)),))
     >>> x = LocalAssign('x')
     >>> body = Suite([Local('x'), Code.PRINT_EXPR])
 
@@ -2283,7 +2291,7 @@ the stack at the end of the generated code::
     >>> c.return_(Function(Return(Local('a')), 'f', ['a'], defaults=[42]))
     >>> dis(c.code())
       0           0 LOAD_CONST               1 (42)
-                  3 LOAD_CONST               2 (<... f ..., file "<string>", line -1>)
+                  3 LOAD_CONST               2 (<... f..., file ...<string>..., line ...>)
                   6 MAKE_FUNCTION            1
                   9 RETURN_VALUE
 
@@ -2314,7 +2322,7 @@ Now let's create a doubly nested function, with some extras::
     >>> dis(c.code())
       0           0 LOAD_CONST               1 (99)
                   3 LOAD_CONST               2 (66)
-                  6 LOAD_CONST               3 (<... f ..., file "<string>", line -1>)
+                  6 LOAD_CONST               3 (<... f..., file ...<string>..., line ...>)
                   9 MAKE_FUNCTION            2
                  12 RETURN_VALUE
 
@@ -2327,7 +2335,7 @@ Now let's create a doubly nested function, with some extras::
 
     >>> dis(f)
       0           0 LOAD_CLOSURE             0 (a)
-                  ... LOAD_CONST               1 (<... <lambda> ..., file "<string>", line -1>)
+                  ... LOAD_CONST               1 (<... <lambda>..., file ...<string>..., line ...>)
                   ... MAKE_CLOSURE             0
                   ... RETURN_VALUE
 
@@ -2669,9 +2677,9 @@ Stack tracking on jumps::
     >>> c.stack_size
     0
     >>> if sys.version>='2.7':
-    ...     print c.stack_history == [0, 1, 1, 1,    0, 0, 0, None, None, 1]
+    ...     print(c.stack_history == [0, 1, 1, 1,    0, 0, 0, None, None, 1])
     ... else:
-    ...     print c.stack_history == [0, 1, 1, 1, 1, 1, 1, 0, None, None, 1]
+    ...     print(c.stack_history == [0, 1, 1, 1, 1, 1, 1, 0, None, None, 1])
     True
     
 
@@ -2967,7 +2975,7 @@ Constant folding for ``*args`` and ``**kw``::
     >>> c = Code()
     >>> c.return_(Call(Const(type), [], [], (1,)))
     >>> dis(c.code())
-      0           0 LOAD_CONST               1 (<type 'int'>)
+      0           0 LOAD_CONST               1 (<... 'int'>)
                   3 RETURN_VALUE
 
 
@@ -2997,14 +3005,14 @@ Try/Except stack level tracking::
                     POP_BLOCK
                     JUMP_FORWARD            L3
             L1:     DUP_TOP
-                    LOAD_CONST               1 (<...exceptions.AttributeError...>)
+                    LOAD_CONST               1 (<...AttributeError...>)
                     COMPARE_OP              10 (exception match)
                     JUMP_IF_FALSE           L2
                     POP_TOP
                     POP_TOP
                     POP_TOP
                     POP_TOP
-                    LOAD_CONST               2 (<type 'type'>)
+                    LOAD_CONST               2 (<... 'type'>)
                     ROT_TWO
                     CALL_FUNCTION            1
                     JUMP_FORWARD            L3
@@ -3012,9 +3020,9 @@ Try/Except stack level tracking::
                     END_FINALLY
             L3:     RETURN_VALUE
 
-    >>> type_or_class.func_code = c.code()
+    >>> type_or_class.__code__ = type_or_class.func_code = c.code()
     >>> type_or_class(23)
-    <type 'int'>
+    <... 'int'>
     
 
 
@@ -3069,7 +3077,7 @@ is an implementation of a simple "switch/case/else" structure::
     >>> c(Switch(Local('x'), [(1,Return(42)),(2,Return("foo"))], Return(27)))
     >>> c.return_()
 
-    >>> f = new.function(c.code(), globals())
+    >>> f = function(c.code(), globals())
     >>> f(1)
     42
     >>> f(2)
@@ -3079,7 +3087,7 @@ is an implementation of a simple "switch/case/else" structure::
 
     >>> dump(c.code())
                     SETUP_LOOP              L2
-                    LOAD_CONST               1 (<...method get of dict...>)
+                    LOAD_CONST               1 (<...method ...get of ...>)
                     LOAD_FAST                0 (x)
                     CALL_FUNCTION            1
                     JUMP_IF_FALSE           L1
@@ -3107,3 +3115,6 @@ TODO
 * Exhaustive tests of all opcodes' stack history effects
 
 * Test wide jumps and wide argument generation in general
+
+* Remove/renumber local variables when a local is converted to free/cell
+
