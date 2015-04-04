@@ -11,7 +11,7 @@ PACKAGES = ['peak', 'peak.util']
 
 def get_description():
     # Get our long description from the documentation
-    f = file('README.txt')
+    f = open('README.txt')
     lines = []
     for line in f:
         if not line.strip():

@@ -1,6 +1,5 @@
 from array import array
 from dis import *
-from new import code, function
 from types import CodeType
 from peak.util.symbols import Symbol
 from peak.util.decorators import decorate_assignment, decorate
@@ -37,6 +36,48 @@ CO_FUTURE_ABSOLUTE_IMPORT = 0x4000      # Python 2.5+ only
 CO_FUTURE_WITH_STATEMENT  = 0x8000      # Python 2.5+ only
 
 __all__.extend([k for k in globals().keys() if k.startswith('CO_')])
+
+
+
+try:
+    from new import code as NEW_CODE, function
+except ImportError:
+    from types import FunctionType as function
+    NEW_CODE = lambda ac, *args: CodeType(ac, 0, *args)
+    long = ord = int
+    unicode = basestring = str
+    CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
+        '__code__', '__globals__', '__defaults__', '__closure__', '__func__'
+    )
+else:
+    CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
+        'func_code', 'func_globals', 'func_defaults', 'func_closure', 'im_func'
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class Const(object):
@@ -444,9 +485,9 @@ def with_name(f, name):
         return f
     except (TypeError,AttributeError):
         return function(
-            f.func_code, f.func_globals, name, f.func_defaults, f.func_closure
+            getattr(f,CODE), getattr(f,GLOBALS), name, getattr(f,DEFAULTS),
+            getattr(f,CLOSURE)
         )
-
 
 
 EXTRA_JUMPS = 'JUMP_IF_FALSE_OR_POP JUMP_IF_TRUE_OR_POP JUMP_IF_FALSE JUMP_IF_TRUE'.split()
@@ -669,7 +710,8 @@ class Code(object):
 
     stack_size = property(get_stack_size, set_stack_size)
 
-    def stackchange(self, (inputs,outputs)):
+    def stackchange(self, inout):
+        (inputs,outputs) = inout
         if self._ss is None:
             raise AssertionError("Unknown stack size at this location")
         self.stack_size -= inputs   # check underflow
@@ -677,7 +719,6 @@ class Code(object):
 
     def stack_unknown(self):
         self._ss = None
-
 
 
 
@@ -880,7 +921,7 @@ class Code(object):
     def __call__(self, *args):
         last = None
         for ob in args:
-            if callable(ob):
+            if hasattr(ob, '__call__'):
                 last = ob(self)
             else:
                 try:
@@ -896,7 +937,7 @@ class Code(object):
 
     decorate(classmethod)
     def from_function(cls, function, copy_lineno=False):
-        code = cls.from_code(function.func_code, copy_lineno)
+        code = cls.from_code(getattr(function, CODE), copy_lineno)
         return code
 
 
@@ -954,7 +995,7 @@ class Code(object):
 
     def nested(self, name='<lambda>', args=(), var=None, kw=None, cls=None):
         if cls is None:
-            cls = Code
+            cls = self.__class__
         code = cls.from_spec(name, args, var, kw)
         code.co_filename=self.co_filename
         return code
@@ -970,7 +1011,7 @@ class Code(object):
                 oparg = code[i+1] + code[i+2]*256 + extended_arg
                 extended_arg = 0
                 if op == EXTENDED_ARG:
-                    extended_arg = oparg*65536
+                    extended_arg = oparg*long(65536)
                     i+=3
                     continue
                 yield i, op, oparg
@@ -1054,7 +1095,7 @@ class Code(object):
         elif parent is not None and self.co_freevars:
             parent.makecells(self.co_freevars)
 
-        return code(
+        return NEW_CODE(
             self.co_argcount, len(self.co_varnames),
             self.co_stacksize, flags, self.co_code.tostring(),
             tuple(self.co_consts), tuple(self.co_names),
@@ -1247,7 +1288,7 @@ def iter_code(codestring):
             extended_arg = 0
             ptr += 2
             if op == EXTENDED_ARG:
-                extend = arg*65536L
+                extend = arg*long(65536)
                 continue
             if op in hasjrel or op in hasjabs:
                 jump = arg+ptr*(op in hasjrel)
@@ -1271,8 +1312,8 @@ for name, group in dict(
 
 def dump(code):
     """Disassemble code in a symbolic manner, i.e., without offsets"""
-    if hasattr(code, 'im_func'): code = code.im_func
-    if hasattr(code, 'func_code'): code = code.func_code
+    code = getattr(code, FUNC, code)
+    code = getattr(code, CODE, code)
 
     co_names = code.co_names
     co_consts = [repr(x) for x in code.co_consts]
@@ -1290,24 +1331,24 @@ def dump(code):
     i = 0
     while i<len(instructions):
         start, op, arg, jump, end = instructions[i]
-        print '       ', labels.get(start, '').ljust(7),
+        ln = '         '+labels.get(start, '').ljust(7)
         if op==DUP_TOP and instructions[i+1][1] in (POP_JUMP_IF_FALSE, POP_JUMP_IF_TRUE):
             s, op, arg, jump, end = instructions[i+1]
-            print ['JUMP_IF_FALSE', 'JUMP_IF_TRUE'][op==POP_JUMP_IF_TRUE].ljust(15),
+            ln+=' '+['JUMP_IF_FALSE', 'JUMP_IF_TRUE'][op==POP_JUMP_IF_TRUE].ljust(15)
             i+=1
         elif op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP):
-            print opname[op][:-7].ljust(15),
+            ln += ' ' + opname[op][:-7].ljust(15)
         else:
-            print opname[op].ljust(15),
+            ln += ' ' + opname[op].ljust(15)
         if jump is not None:
-            print labels[jump][:-1].rjust(10),
+            ln += ' ' + labels[jump][:-1].rjust(10)
         elif arg is not None:
-            print repr(arg).rjust(10), 
+            ln += ' ' + repr(arg).rjust(10)
             if op in argtype:
-                print '(%s)' % (locals()[argtype[op]][arg]),
-        print
+                ln += ' (%s)' % (locals()[argtype[op]][arg])
+        print(ln)
         if op in (JUMP_IF_TRUE_OR_POP, JUMP_IF_FALSE_OR_POP):
-            print '       ', ''.ljust(7), 'POP_TOP'
+            print('        '+''.ljust(7) + ' POP_TOP')
         i+=1
 
 class _se:
