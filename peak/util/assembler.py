@@ -46,15 +46,15 @@ except ImportError:
     NEW_CODE = lambda ac, *args: CodeType(ac, 0, *args)
     long = ord = int
     unicode = basestring = str
+    to_code = lambda x: x.tobytes()
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
         '__code__', '__globals__', '__defaults__', '__closure__', '__func__'
     )
 else:
+    to_code = lambda x: x.tostring()
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
         'func_code', 'func_globals', 'func_defaults', 'func_closure', 'im_func'
     )
-
-
 
 
 
@@ -343,7 +343,7 @@ def ListComp(body, code=None):
     finally:
         code._tmp_level -= 1
     return r
-    
+
 
 nodetype()
 def LCAppend(value, code=None):
@@ -705,7 +705,14 @@ class Code(object):
         def BINARY_DIVIDE(self):
             self.BINARY_TRUE_DIVIDE()
 
-
+    if 'DUP_TOPX' not in opcode:
+        def DUP_TOPX(self, count):
+            self.stackchange((count,count*2))
+            if count==2:
+                self.emit(DUP_TOP_TWO)
+            else:
+                raise RuntimeError("Python 3 only supports DUP_TOP_TWO")
+                
     def set_stack_size(self, size):
         if size<0:
             raise AssertionError("Stack underflow")
@@ -805,7 +812,7 @@ class Code(object):
         if arg is not None:
             self.emit_arg(op, jump_target(arg))
             self.branch_stack(arg, old_level)
-            lbl = None            
+            lbl = None
         else:
             self.emit_arg(op, 0)
             def lbl(code=None):
@@ -865,7 +872,7 @@ class Code(object):
             self.POP_TOP()
             return lbl
         globals()['JUMP_IF_TRUE_OR_POP'] = -1
-        
+
     if 'JUMP_IF_FALSE_OR_POP' not in opcode:
         def JUMP_IF_FALSE_OR_POP(self, address=None):
             lbl = self.JUMP_IF_FALSE(address)
@@ -897,7 +904,7 @@ class Code(object):
 
 
 
-            
+
 
 
     def assert_loop(self):
@@ -1019,7 +1026,7 @@ class Code(object):
             else:
                 yield i, op, None
                 i += 1
-        
+
 
 
 
@@ -1097,11 +1104,11 @@ class Code(object):
 
         return NEW_CODE(
             self.co_argcount, len(self.co_varnames),
-            self.co_stacksize, flags, self.co_code.tostring(),
+            self.co_stacksize, flags, to_code(self.co_code),
             tuple(self.co_consts), tuple(self.co_names),
             tuple(self.co_varnames),
             self.co_filename, self.co_name, self.co_firstlineno,
-            self.co_lnotab.tostring(), self.co_freevars, self.co_cellvars
+            to_code(self.co_lnotab), self.co_freevars, self.co_cellvars
         )
 
 
@@ -1298,10 +1305,10 @@ def iter_code(codestring):
             arg = label = jump = None
         yield start, op, arg, jump, ptr
         start = ptr
-  
+
 argtype = {}
 for name, group in dict(
-    co_consts = hasconst, 
+    co_consts = hasconst,
     co_names = hasname,
     co_varnames = haslocal,
     free = hasfree,
