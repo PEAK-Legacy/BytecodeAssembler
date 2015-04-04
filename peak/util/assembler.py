@@ -698,8 +698,8 @@ class Code(object):
     if 'UNARY_CONVERT' not in opcode:
         def UNARY_CONVERT(self):
             self(Const(repr))
-            self.SWAP_TOP()
-            self.CALL_FUNCTION(argc, 0)
+            self.ROT_TWO()
+            self.CALL_FUNCTION(1, 0)
 
     if 'BINARY_DIVIDE' not in opcode:
         def BINARY_DIVIDE(self):

@@ -19,6 +19,11 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
 
+Changes since version 0.6:
+
+* Experimental Python 3 support, including emulation of restored
+  ``BINARY_DIVIDE`` and ``UNARY_CONVERT`` functions.
+
 Changes since version 0.5.2:
     
 * Symbolic disassembly with full emulation of backward-compatible
