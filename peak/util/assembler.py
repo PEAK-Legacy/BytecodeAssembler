@@ -124,6 +124,7 @@ class Const(object):
 class Node(tuple):
     """Base class for AST nodes"""
     __slots__ = []
+    __hash__ = tuple.__hash__
 
 def nodetype(*mixins, **kw):
 
@@ -159,7 +160,6 @@ def nodetype(*mixins, **kw):
         return type(name, mixins+(Node,), d)
 
     return decorate_assignment(callback)
-
 
 
 nodetype()
@@ -695,6 +695,17 @@ class Code(object):
         return len(self.co_code)
 
 
+    if 'UNARY_CONVERT' not in opcode:
+        def UNARY_CONVERT(self):
+            self(Const(repr))
+            self.SWAP_TOP()
+            self.CALL_FUNCTION(argc, 0)
+
+    if 'BINARY_DIVIDE' not in opcode:
+        def BINARY_DIVIDE(self):
+            self.BINARY_TRUE_DIVIDE()
+
+
     def set_stack_size(self, size):
         if size<0:
             raise AssertionError("Stack underflow")
@@ -719,17 +730,6 @@ class Code(object):
 
     def stack_unknown(self):
         self._ss = None
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -891,13 +891,13 @@ class Code(object):
         def LIST_APPEND(self, depth):
             self.stackchange((depth+1, depth))
             self.emit_arg(LIST_APPEND, depth)
-    
 
 
 
 
 
 
+            
 
 
     def assert_loop(self):
