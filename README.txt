@@ -22,7 +22,7 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 Changes since version 0.6:
 
 * Experimental Python 3 support, including emulation of restored
-  ``BINARY_DIVIDE`` and ``UNARY_CONVERT`` functions.
+  ``BINARY_DIVIDE``, ``UNARY_CONVERT``, and ``SLICE_#`` opcodes.
 
 Changes since version 0.5.2:
     
@@ -1058,7 +1058,7 @@ raised::
     >>> const_value(Local('x'))
     Traceback (most recent call last):
       ...
-    NotAConstant: Local('x')
+    peak.util.assembler.NotAConstant: Local('x')
 
 Tuples of constants are recursively replaced by constant tuples::
 
@@ -1073,14 +1073,14 @@ But any non-constant values anywhere in the structure cause an error::
     >>> const_value( (1,Global('y')) )
     Traceback (most recent call last):
       ...
-    NotAConstant: Global('y')
+    peak.util.assembler.NotAConstant: Global('y')
 
 As do any types not previously described here::
 
     >>> const_value([1,2])
     Traceback (most recent call last):
       ...
-    NotAConstant: [1, 2]
+    peak.util.assembler.NotAConstant: [1, 2]
 
 Unless of course they're wrapped with ``Const``::
 
@@ -1890,7 +1890,7 @@ and an optional "else" clause::
                     POP_TOP
                     POP_TOP
                     POP_TOP
-                    POP_TOP
+                    POP_TOP...
                     LOAD_CONST               3 (2)
                     JUMP_FORWARD            L5
             L2:     POP_TOP
@@ -1901,7 +1901,7 @@ and an optional "else" clause::
                     POP_TOP
                     POP_TOP
                     POP_TOP
-                    POP_TOP
+                    POP_TOP...
                     LOAD_CONST               5 (3)
                     JUMP_FORWARD            L5
             L3:     POP_TOP
@@ -3016,7 +3016,7 @@ Try/Except stack level tracking::
                     POP_TOP
                     POP_TOP
                     POP_TOP
-                    POP_TOP
+                    POP_TOP...
                     LOAD_CONST               2 (<... 'type'>)
                     ROT_TWO
                     CALL_FUNCTION            1

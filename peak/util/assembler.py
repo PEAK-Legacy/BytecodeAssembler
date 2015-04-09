@@ -712,7 +712,19 @@ class Code(object):
                 self.emit(DUP_TOP_TWO)
             else:
                 raise RuntimeError("Python 3 only supports DUP_TOP_TWO")
-                
+
+    if 'SLICE_0' not in opcode:
+        def SLICE_0(self):
+            self(None, None, Code.SLICE_3)
+        def SLICE_1(self):
+            self(None, Code.SLICE_3)
+        def SLICE_2(self):
+            self(None, Code.ROT_TWO, Code.SLICE_3)
+        def SLICE_3(self):
+            self.BUILD_SLICE(2)
+            self.BINARY_SUBSCR()           
+            
+
     def set_stack_size(self, size):
         if size<0:
             raise AssertionError("Stack underflow")
@@ -722,6 +734,7 @@ class Code(object):
         if bytes>0:
             self.stack_history.extend([self._ss]*bytes)
         self._ss = size
+
 
     def get_stack_size(self):
         return self._ss
@@ -759,19 +772,6 @@ class Code(object):
                 "Stack level mismatch: actual=%s expected=%s"
                 % (actual, expected)
             )
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
