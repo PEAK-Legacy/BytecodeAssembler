@@ -63,7 +63,7 @@ else:
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
         'func_code', 'func_globals', 'func_defaults', 'func_closure', 'im_func'
     )
-
+    ord = ord
 
 
 
