@@ -19,10 +19,14 @@ Please see the `BytecodeAssembler reference manual`_ for more details.
 .. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
 
 
-Changes since version 0.6:
+Changes since version 0.6.1:
 
 * Experimental Python 3 support, including emulation of restored
   ``BINARY_DIVIDE``, ``UNARY_CONVERT``, and ``SLICE_#`` opcodes.
+
+Changes since version 0.6:
+
+* Fix bad stack calculations for BUILD_CLASS opcode
 
 Changes since version 0.5.2:
     
@@ -2428,6 +2432,10 @@ Stack size tracking::
     >>> c.POP_TOP()
     >>> c.stack_size
     3
+    >>> c.BUILD_CLASS()
+    >>> c.stack_size
+    1
+    
 
 Stack underflow detection/recovery, and global/local variable names::
 
