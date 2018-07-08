@@ -2,6 +2,21 @@
 Generating Python Bytecode with ``peak.util.assembler``
 =======================================================
 
+
+   NOTE: This module has not been updated for many bytecode changes in recent
+   Python 3.x versions, and at present is completely incompatible with Python
+   3.6 (to the point of causing core dumps).  We suggest using the Python `ast`
+   module instead.
+
+   This module was originally developed when Python **2.5** was *new*, and
+   support for the `ast` module was still immature; the only real benefits it
+   provides over Python's builtin AST are constant folding and the ability to
+   generate hand-specified code not tied to Python's usual compilation process.
+   (e.g. PEAK-Rules using it to create jump tables and common subexpression
+   elimination in its rules interpreter.)
+
+----
+
 ``peak.util.assembler`` is a simple bytecode assembler module that handles most
 low-level bytecode generation details like jump offsets, stack size tracking,
 line number table generation, constant and variable name index tracking, etc.
@@ -16,7 +31,7 @@ instructions, and includes the ability to do compile-time constant folding.
 
 Please see the `BytecodeAssembler reference manual`_ for more details.
 
-.. _BytecodeAssembler reference manual: http://peak.telecommunity.com/DevCenter/BytecodeAssembler#toc
+.. _BytecodeAssembler reference manual: https://github.com/PEAK-Legacy/BytecodeAssembler#user-content-table-of-contents
 
 
 Changes since version 0.6.1:
@@ -3131,3 +3146,4 @@ TODO
 
 * Remove/renumber local variables when a local is converted to free/cell
 
+.. ex: set ft=rst :
