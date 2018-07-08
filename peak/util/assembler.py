@@ -53,7 +53,7 @@ except ImportError:
         if not hasattr(x, 'tobytes'):
             to_code = lambda x: x.tostring()
         else:
-            to_code = lambda x: x.tostring()
+            to_code = lambda x: x.tobytes()
         return to_code(x)
 
     CODE, GLOBALS, DEFAULTS, CLOSURE, FUNC  = (
